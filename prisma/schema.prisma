@@ -1,0 +1,172 @@
+// Bitsclock data model: users, custom roles with permissions, projects, time entries.
+// Database: PostgreSQL on Supabase. DATABASE_URL = pooled (pgbouncer) connection,
+// DIRECT_URL = direct connection used by `prisma db push` / migrations.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  description String?
+  color       String           @default("#0d9488")
+  // System roles ("Administrator", "Employee") cannot be deleted. Administrator cannot be edited either.
+  isSystem    Boolean          @default(false)
+  permissions RolePermission[]
+  users       User[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@map("roles")
+}
+
+model RolePermission {
+  roleId     String
+  permission String
+  role       Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permission])
+  @@map("role_permissions")
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  name         String
+  passwordHash String
+  jobTitle     String?
+  roleId       String
+  role         Role        @relation(fields: [roleId], references: [id])
+  isActive     Boolean     @default(true)
+  timeEntries  TimeEntry[]
+  projects     Project[]   @relation("ProjectCreator")
+  memberships  ProjectMember[]
+  // Bumped on password change / "sign out everywhere": tokens carrying an older version are rejected.
+  tokenVersion Int         @default(0)
+  sessions     RefreshSession[]
+  passwordResets PasswordReset[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@map("bc_users")
+}
+
+// One row per signed-in device. Only a SHA-256 hash of the refresh token is stored,
+// so a database leak cannot be replayed as a session.
+model RefreshSession {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  // Previous hash kept for a short grace window so concurrent refreshes (page + prefetches,
+  // several tabs) that still carry the old token are not treated as a stolen replay.
+  prevTokenHash String?
+  rotatedAt  DateTime  @default(now())
+  remember   Boolean   @default(false)
+  userAgent  String?
+  ip         String?
+  expiresAt  DateTime
+  lastUsedAt DateTime  @default(now())
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([prevTokenHash])
+  @@map("bc_refresh_sessions")
+}
+
+// One row per "forgot password" request. Only an HMAC of the 6-digit code is stored;
+// a code expires after 15 minutes, allows 5 wrong guesses, and can be used once.
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  attempts  Int       @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@map("bc_password_resets")
+}
+
+// One row per mutating request that carried an Idempotency-Key header, so a client
+// retry after a network failure replays the stored response instead of running twice.
+model IdempotencyKey {
+  id        String   @id // "<userId>:<key>"
+  userId    String
+  status    Int      @default(0) // 0 = in progress
+  body      String   @default("")
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("bc_idempotency_keys")
+}
+
+model Project {
+  id          String          @id @default(cuid())
+  name        String
+  description String?
+  color       String          @default("#0d9488")
+  isArchived  Boolean         @default(false)
+  // Time logged on this project counts as billable. Entries copy this flag when created.
+  billable    Boolean         @default(true)
+  // Who may log time: "all" = every active member, "selected" = only rows in members.
+  memberMode  String          @default("all")
+  // "project" = client/internal work. "activity" = a non-project bucket members can log
+  // time against (lunch break, internal meeting, training); same rules, shown separately.
+  kind        String          @default("project")
+  members     ProjectMember[]
+  createdById String?
+  createdBy   User?           @relation("ProjectCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  timeEntries TimeEntry[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@map("bc_projects")
+}
+
+model ProjectMember {
+  projectId String
+  userId    String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("bc_project_members")
+}
+
+model TimeEntry {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId       String?
+  project         Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  description     String    @default("")
+  startTime       DateTime
+  // null while the timer is running
+  endTime         DateTime?
+  durationSeconds Int?
+  billable        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId, startTime])
+  @@index([projectId, startTime])
+  @@index([userId, endTime])
+  // Team-wide period queries (reports, dashboard, timesheet for "everyone").
+  @@index([startTime])
+  // Per-member project counts and "projects I've logged on".
+  @@index([userId, projectId])
+  @@map("bc_time_entries")
+}

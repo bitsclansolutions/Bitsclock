@@ -1,0 +1,117 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { ArrowRight, Bell, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { useUser } from "@/context/UserContext";
+import { useToast } from "@/context/ToastContext";
+import { PERMISSION_GROUPS } from "@/lib/permissions";
+import { DEFAULT_PREFS, readPrefs, writePrefs, type Prefs } from "@/lib/prefs";
+import { Avatar, RoleBadge, Seg, cx } from "@/components/ui";
+
+type Section = "preferences" | "permissions";
+
+const SECTIONS: { id: Section; label: string; icon: React.ReactNode; blurb: string }[] = [
+  { id: "preferences", label: "Preferences", icon: <SlidersHorizontal className="h-4 w-4" />, blurb: "Tracker defaults and display" },
+  { id: "permissions", label: "Permissions", icon: <ShieldCheck className="h-4 w-4" />, blurb: "What your role allows" },
+];
+
+export function SettingsView() {
+  const { user, can } = useUser();
+  const toast = useToast();
+  const [section, setSection] = useState<Section>("preferences");
+
+  // Preferences (per device)
+  const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
+  useEffect(() => setPrefs(readPrefs()), []);
+  const setPref = <K extends keyof Prefs>(k: K, v: Prefs[K]) => {
+    setPrefs(writePrefs({ [k]: v }));
+    toast.success("Preference saved");
+  };
+
+  return (
+    <div className="grid gap-5 lg:grid-cols-[16rem_1fr]">
+      {/* Section nav */}
+      <aside className="space-y-4">
+        <Link href="/profile" className="card group flex items-center gap-3 p-4 transition-shadow hover:shadow-pop">
+          <Avatar name={user.name} color={user.role.color} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-extrabold text-ink-900">{user.name}</p>
+            <p className="truncate text-xs text-ink-500">{user.email}</p>
+            <div className="mt-1"><RoleBadge name={user.role.name} color={user.role.color} /></div>
+          </div>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink-50 text-ink-500 transition-colors group-hover:bg-ink-900 group-hover:text-white" aria-hidden><ArrowRight className="h-4 w-4" /></span>
+        </Link>
+        <p className="px-1 text-xs text-ink-500">Name, password and signed-in devices live on your <Link href="/profile" className="font-semibold text-ink-900 underline-offset-2 hover:underline">profile</Link>.</p>
+        <nav className="card p-2" aria-label="Settings sections">
+          {SECTIONS.map((s) => (
+            <button key={s.id} type="button" onClick={() => setSection(s.id)} aria-current={section === s.id ? "page" : undefined} className={cx("flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors", section === s.id ? "bg-ink-900 text-white" : "text-ink-800 hover:bg-ink-50")}>
+              <span className={cx("flex h-8 w-8 items-center justify-center rounded-full", section === s.id ? "bg-white/15" : "bg-brand-50 text-brand-700")}>{s.icon}</span>
+              <span className="min-w-0">
+                <span className="block text-sm font-bold">{s.label}</span>
+                <span className={cx("block truncate text-xs", section === s.id ? "text-white/70" : "text-ink-500")}>{s.blurb}</span>
+              </span>
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      {/* Section content */}
+      <div className="space-y-5">
+        {section === "preferences" && (
+          <section className="card p-6" aria-label="Preferences">
+            <h2 className="text-lg font-extrabold text-ink-900">Preferences</h2>
+            <p className="text-sm text-ink-500">Saved on this device. They change how the app looks and behaves for you here.</p>
+            <div className="mt-5 divide-y divide-line">
+              {[
+                { label: "Tracker opens in", hint: "Timer starts the clock now; Manual logs a start and end time.", control: <Seg value={prefs.defaultMode} onChange={(v) => setPref("defaultMode", v)} options={[{ value: "timer", label: "Timer" }, { value: "manual", label: "Manual" }]} /> },
+                { label: "Entries shown by default", hint: "How far back the time tracker lists when it opens.", control: <Seg value={prefs.trackerWindow} onChange={(v) => setPref("trackerWindow", v)} options={[{ value: "7", label: "7 days" }, { value: "14", label: "14 days" }, { value: "30", label: "30 days" }]} /> },
+                { label: "Time format", hint: "How start and end times are written.", control: <Seg value={prefs.timeFormat} onChange={(v) => setPref("timeFormat", v)} options={[{ value: "24h", label: "14:30" }, { value: "12h", label: "2:30 PM" }]} /> },
+                { label: "Week starts on", hint: "Affects weekly totals and charts.", control: <Seg value={prefs.weekStart} onChange={(v) => setPref("weekStart", v)} options={[{ value: "monday", label: "Monday" }, { value: "sunday", label: "Sunday" }]} /> },
+                { label: "Tick the tab title while a timer runs", hint: "Shows the elapsed time in the browser tab.", control: <Seg value={prefs.tickingTitle ? "on" : "off"} onChange={(v) => setPref("tickingTitle", v === "on")} options={[{ value: "on", label: "On" }, { value: "off", label: "Off" }]} /> },
+                { label: "Long-timer reminder", hint: "Warn when a timer has run longer than this.", control: <Seg value={String(prefs.longTimerHours)} onChange={(v) => setPref("longTimerHours", Number(v))} options={[{ value: "4", label: "4h" }, { value: "8", label: "8h" }, { value: "12", label: "12h" }, { value: "0", label: "Never" }]} /> },
+              ].map((row) => (
+                <div key={row.label} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-bold text-ink-900">{row.label}</p>
+                    <p className="text-xs text-ink-500">{row.hint}</p>
+                  </div>
+                  {row.control}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {section === "permissions" && (
+          <section className="card p-6" aria-label="Permissions">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-extrabold text-ink-900">Your permissions</h2>
+                <p className="text-sm text-ink-500">Granted by the <b>{user.role.name}</b> role. Administrators change roles from the Team page.</p>
+              </div>
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-700"><Bell className="h-5 w-5" /></span>
+            </div>
+            <div className="mt-5 grid gap-3 md:grid-cols-2">
+              {PERMISSION_GROUPS.map((g) => (
+                <div key={g.key} className="rounded-2xl bg-ink-50 p-4">
+                  <p className="text-sm font-bold text-ink-900">{g.label}</p>
+                  <ul className="mt-2 space-y-1.5">
+                    {g.permissions.map((p) => {
+                      const on = can(p.key);
+                      return (
+                        <li key={p.key} className={cx("flex items-center gap-2 text-sm", on ? "text-ink-800" : "text-ink-400 line-through")}>
+                          <span className={cx("h-2 w-2 rounded-full", on ? "bg-brand-500" : "bg-ink-300")} /> {p.label}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
