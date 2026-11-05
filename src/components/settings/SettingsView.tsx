@@ -2,19 +2,68 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Bell, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { ArrowRight, Bell, Lock, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useUser } from "@/context/UserContext";
 import { useToast } from "@/context/ToastContext";
+import { api, errMsg } from "@/lib/client";
+import { invalidate, useApi } from "@/lib/useApi";
+import { dayKey } from "@/lib/time";
+import type { WorkspaceDTO } from "@/lib/workspace";
 import { PERMISSION_GROUPS } from "@/lib/permissions";
-import { DEFAULT_PREFS, readPrefs, writePrefs, type Prefs } from "@/lib/prefs";
+import { DEFAULT_PREFS, readPrefs, writePrefs, TRACKER_PAGE_SIZES, TRACKER_WINDOWS, type Prefs } from "@/lib/prefs";
 import { Avatar, RoleBadge, Seg, cx } from "@/components/ui";
+import { Select } from "@/components/Select";
 
-type Section = "preferences" | "permissions";
+type Section = "preferences" | "permissions" | "workspace";
 
-const SECTIONS: { id: Section; label: string; icon: React.ReactNode; blurb: string }[] = [
+const SECTIONS: { id: Section; label: string; icon: React.ReactNode; blurb: string; adminOnly?: boolean }[] = [
   { id: "preferences", label: "Preferences", icon: <SlidersHorizontal className="h-4 w-4" />, blurb: "Tracker defaults and display" },
   { id: "permissions", label: "Permissions", icon: <ShieldCheck className="h-4 w-4" />, blurb: "What your role allows" },
+  { id: "workspace", label: "Workspace", icon: <Lock className="h-4 w-4" />, blurb: "Lock invoiced time", adminOnly: true },
 ];
+
+/**
+ * The invoicing lock date (D-005), Administrator only. Entries that start before it can
+ * only be created, edited or deleted by the Administrator.
+ */
+function WorkspaceSection() {
+  const toast = useToast();
+  const q = useApi<WorkspaceDTO>("/api/workspace", { ttlMs: 30_000 });
+  const current = q.data?.lockDate ? dayKey(q.data.lockDate) : "";
+  const [draft, setDraft] = useState<string | null>(null);
+  const value = draft ?? current;
+  const [busy, setBusy] = useState(false);
+  const save = async (next: string) => {
+    setBusy(true);
+    try {
+      // Midnight at the start of the chosen day, in this browser's time zone.
+      const lockDate = next ? new Date(next + "T00:00:00").toISOString() : null;
+      await api("/api/workspace", { method: "PATCH", json: { lockDate } });
+      invalidate("/api/workspace");
+      setDraft(null);
+      toast.success(next ? "Lock date saved" : "Lock date removed", next ? `Time before ${new Date(next + "T00:00:00").toLocaleDateString()} is now locked for everyone but you.` : undefined);
+    } catch (e) {
+      toast.error("Couldn't save the lock date", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="card p-6" aria-label="Workspace">
+      <h2 className="text-lg font-extrabold text-ink-900">Lock invoiced time</h2>
+      <p className="text-sm text-ink-500">Entries that start before the lock date can&apos;t be added, edited or deleted by anyone except you, so invoiced hours stay as billed. Every change is recorded in the audit log.</p>
+      <div className="mt-5 flex flex-wrap items-end gap-3">
+        <div>
+          <label className="label" htmlFor="lock-date">Locked before</label>
+          <input id="lock-date" type="date" className="field w-[11rem]" value={value} max={dayKey(new Date())} onChange={(e) => setDraft(e.target.value)} disabled={q.loading && !q.data} />
+        </div>
+        <button type="button" className="btn btn-primary" disabled={busy || !value || value === current} onClick={() => save(value)}>{busy ? "Saving…" : "Save lock date"}</button>
+        {current && <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => save("")}>Remove lock</button>}
+      </div>
+      <p className="mt-3 text-xs text-ink-500">{current ? `Currently locked before ${new Date(current + "T00:00:00").toLocaleDateString()}.` : "Nothing is locked yet."}</p>
+    </section>
+  );
+}
 
 export function SettingsView() {
   const { user, can } = useUser();
@@ -40,12 +89,12 @@ export function SettingsView() {
             <p className="truncate text-xs text-ink-500">{user.email}</p>
             <div className="mt-1"><RoleBadge name={user.role.name} color={user.role.color} /></div>
           </div>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink-50 text-ink-500 transition-colors group-hover:bg-ink-900 group-hover:text-white" aria-hidden><ArrowRight className="h-4 w-4" /></span>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink-50 text-ink-500 transition-colors group-hover:bg-brand-600 group-hover:text-white" aria-hidden><ArrowRight className="h-4 w-4" /></span>
         </Link>
         <p className="px-1 text-xs text-ink-500">Name, password and signed-in devices live on your <Link href="/profile" className="font-semibold text-ink-900 underline-offset-2 hover:underline">profile</Link>.</p>
         <nav className="card p-2" aria-label="Settings sections">
-          {SECTIONS.map((s) => (
-            <button key={s.id} type="button" onClick={() => setSection(s.id)} aria-current={section === s.id ? "page" : undefined} className={cx("flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors", section === s.id ? "bg-ink-900 text-white" : "text-ink-800 hover:bg-ink-50")}>
+          {SECTIONS.filter((s) => !s.adminOnly || user.isAdmin).map((s) => (
+            <button key={s.id} type="button" onClick={() => setSection(s.id)} aria-current={section === s.id ? "page" : undefined} className={cx("flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors", section === s.id ? "bg-brand-600 text-white" : "text-ink-800 hover:bg-ink-50")}>
               <span className={cx("flex h-8 w-8 items-center justify-center rounded-full", section === s.id ? "bg-white/15" : "bg-brand-50 text-brand-700")}>{s.icon}</span>
               <span className="min-w-0">
                 <span className="block text-sm font-bold">{s.label}</span>
@@ -64,12 +113,14 @@ export function SettingsView() {
             <p className="text-sm text-ink-500">Saved on this device. They change how the app looks and behaves for you here.</p>
             <div className="mt-5 divide-y divide-line">
               {[
-                { label: "Tracker opens in", hint: "Timer starts the clock now; Manual logs a start and end time.", control: <Seg value={prefs.defaultMode} onChange={(v) => setPref("defaultMode", v)} options={[{ value: "timer", label: "Timer" }, { value: "manual", label: "Manual" }]} /> },
-                { label: "Entries shown by default", hint: "How far back the time tracker lists when it opens.", control: <Seg value={prefs.trackerWindow} onChange={(v) => setPref("trackerWindow", v)} options={[{ value: "7", label: "7 days" }, { value: "14", label: "14 days" }, { value: "30", label: "30 days" }]} /> },
-                { label: "Time format", hint: "How start and end times are written.", control: <Seg value={prefs.timeFormat} onChange={(v) => setPref("timeFormat", v)} options={[{ value: "24h", label: "14:30" }, { value: "12h", label: "2:30 PM" }]} /> },
-                { label: "Week starts on", hint: "Affects weekly totals and charts.", control: <Seg value={prefs.weekStart} onChange={(v) => setPref("weekStart", v)} options={[{ value: "monday", label: "Monday" }, { value: "sunday", label: "Sunday" }]} /> },
-                { label: "Tick the tab title while a timer runs", hint: "Shows the elapsed time in the browser tab.", control: <Seg value={prefs.tickingTitle ? "on" : "off"} onChange={(v) => setPref("tickingTitle", v === "on")} options={[{ value: "on", label: "On" }, { value: "off", label: "Off" }]} /> },
-                { label: "Long-timer reminder", hint: "Warn when a timer has run longer than this.", control: <Seg value={String(prefs.longTimerHours)} onChange={(v) => setPref("longTimerHours", Number(v))} options={[{ value: "4", label: "4h" }, { value: "8", label: "8h" }, { value: "12", label: "12h" }, { value: "0", label: "Never" }]} /> },
+                { label: "Tracker opens in", hint: "Timer starts the clock now; Manual logs a start and end time.", control: <Seg label="Tracker opens in" value={prefs.defaultMode} onChange={(v) => setPref("defaultMode", v)} options={[{ value: "timer", label: "Timer" }, { value: "manual", label: "Manual" }]} /> },
+                { label: "Entries shown by default", hint: "How far back the time tracker lists when it opens.", control: <Select label="Entries shown by default" value={prefs.trackerWindow} onChange={(v) => setPref("trackerWindow", v as Prefs["trackerWindow"])} options={TRACKER_WINDOWS} className="w-44" /> },
+                { label: "Entry list loads", hint: "Scroll keeps loading as you reach the end; Pages shows numbered pages.", control: <Seg label="Entry list loads" value={prefs.trackerLoading} onChange={(v) => setPref("trackerLoading", v)} options={[{ value: "scroll", label: "Scroll" }, { value: "pages", label: "Pages" }]} /> },
+                { label: "Rows per page", hint: "Used when the entry list shows pages.", control: <Seg label="Rows per page" value={prefs.trackerPageSize} onChange={(v) => setPref("trackerPageSize", v)} options={TRACKER_PAGE_SIZES.map((n) => ({ value: n, label: n }))} /> },
+                { label: "Time format", hint: "How start and end times are written.", control: <Seg label="Time format" value={prefs.timeFormat} onChange={(v) => setPref("timeFormat", v)} options={[{ value: "24h", label: "14:30" }, { value: "12h", label: "2:30 PM" }]} /> },
+                { label: "Week starts on", hint: "Affects weekly totals and charts.", control: <Seg label="Week starts on" value={prefs.weekStart} onChange={(v) => setPref("weekStart", v)} options={[{ value: "monday", label: "Monday" }, { value: "sunday", label: "Sunday" }]} /> },
+                { label: "Tick the tab title while a timer runs", hint: "Shows the elapsed time in the browser tab.", control: <Seg label="Tick the tab title while a timer runs" value={prefs.tickingTitle ? "on" : "off"} onChange={(v) => setPref("tickingTitle", v === "on")} options={[{ value: "on", label: "On" }, { value: "off", label: "Off" }]} /> },
+                { label: "Long-timer reminder", hint: "Warn when a timer has run longer than this.", control: <Seg label="Long-timer reminder" value={String(prefs.longTimerHours)} onChange={(v) => setPref("longTimerHours", Number(v))} options={[{ value: "4", label: "4h" }, { value: "8", label: "8h" }, { value: "12", label: "12h" }, { value: "0", label: "Never" }]} /> },
               ].map((row) => (
                 <div key={row.label} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -82,6 +133,8 @@ export function SettingsView() {
             </div>
           </section>
         )}
+
+        {section === "workspace" && user.isAdmin && <WorkspaceSection />}
 
         {section === "permissions" && (
           <section className="card p-6" aria-label="Permissions">

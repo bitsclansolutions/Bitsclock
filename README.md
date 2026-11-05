@@ -11,28 +11,24 @@ Time tracking for teams, in one Next.js project (frontend + API): timers and man
 
 ## Setup
 
-1. **Database.** In Supabase: *Connect → ORMs → Prisma*. Copy the two strings into `.env`:
-   - `DATABASE_URL` – transaction pooler (port 6543) with `?pgbouncer=true&connection_limit=1`
-   - `DIRECT_URL` – session pooler / direct connection (port 5432)
-2. **Secret.** `.env` already contains a generated `AUTH_SECRET`. Use a different one in production.
-3. **Install and create the schema:**
+1. **Node 24.22.1 or later** (`engines` in package.json).
+2. **Database.** In Supabase: *Connect → ORMs → Prisma*. Copy the two strings into `.env` (see `.env.example`):
+   - `DATABASE_URL` – transaction pooler (port 6543), used by the app
+   - `DIRECT_URL` – session pooler / direct connection (port 5432), used by migrations
+3. **Secrets and seed.** Set `AUTH_SECRET` (32+ characters), `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` (12+ characters; there are no defaults).
+4. **Install, migrate, seed:**
 
    ```bash
-   npm install
-   npm run db:push      # creates the tables (uses DIRECT_URL)
-   npm run db:seed      # system roles, an admin, sample members, projects and entries
+   npm ci
+   npm run db:migrate   # applies prisma/migrations (uses DIRECT_URL)
+   npm run db:seed      # system roles and the single Administrator
    npm run dev
    ```
 
-4. Open http://localhost:3000 and sign in:
+   For demo members and sample entries in a development database, set `SEED_DEMO=1` and
+   `SEED_DEMO_PASSWORD` before seeding. Demo data is refused in production.
 
-   | Account | Email | Password |
-   |---|---|---|
-   | Administrator | admin@bitsclock.com | Admin@12345 |
-   | Manager (custom role) | sara@bitsclock.com | Employee@123 |
-   | Employee | ali@bitsclock.com, hina@bitsclock.com | Employee@123 |
-
-   Change these from **Team → Reset password** before sharing the app.
+5. Open http://localhost:3000 and sign in as the Administrator.
 
 ## What's inside
 
@@ -48,18 +44,23 @@ Time tracking for teams, in one Next.js project (frontend + API): timers and man
 
 ### Roles and permissions
 
-- **Administrator** (system): every permission, cannot be edited or deleted. The last active administrator cannot be deactivated or demoted.
+- **Administrator** (system): exactly one account (D-001). Every permission; the role can't be edited, assigned or deleted, and the account can't be demoted, deactivated or deleted. Only the Administrator adds members, changes roles, resets passwords and edits roles.
 - **Employee** (system): editable permissions, cannot be deleted. Default: track own time, view projects, own reports, export.
-- **Custom roles**: created on *Roles & permissions* by anyone with `roles.manage`, then assigned on *Team*.
+- **Custom roles**: created by the Administrator on *Roles & permissions*, then assigned on *Team*.
+- **Delegation:** `users.request` lets a role ask the Administrator to add someone (approve/reject on *Team*); `users.deactivate` lets a role deactivate members who leave.
+- **Lost Administrator:** `npm run admin:recover -- --email you@company.com`, run by someone with database access. Never an HTTP route.
 
-Permissions: `time.track`, `time.view_all`, `time.manage_all`, `projects.view`, `projects.manage`, `reports.view_own`, `reports.view_all`, `reports.export`, `dashboard.team`, `users.view`, `users.manage`, `roles.manage`.
+Grantable permissions: `time.track`, `time.view_all`, `time.manage_all`, `projects.view`, `projects.manage`, `reports.view_own`, `reports.view_all`, `reports.export`, `dashboard.team`, `users.view`, `users.request`, `users.deactivate`. Administrator only: `users.manage`, `roles.manage`. Every privileged action is written to the audit log (`bc_audit_log`).
 
 ### Time tracking rules
 
-- One running timer per member. Starting a second one is refused.
+- One running timer per member. Starting a second one is refused (also enforced by the database).
 - Manual entries need end after start, at most 24 hours, not in the future, and may not overlap another entry (the running timer counts).
-- Archived projects keep their history but accept no new time.
-- Deactivating a member stops their running timer and keeps their entries in reports.
+- A timer left running more than 24 hours is closed at start + 24 h and flagged "Auto-stopped, please check".
+- Billable follows the project or activity; only `time.manage_all` can override it.
+- Time before the workspace lock date (*Settings → Workspace*, Administrator) is invoiced: only the Administrator can change it.
+- Archived projects keep their history but accept no new time. Projects with time can't be deleted, only archived.
+- Members are deactivated, never deleted. Deactivating stops their running timer and keeps their entries in reports.
 
 ## Scripts
 
@@ -67,16 +68,20 @@ Permissions: `time.track`, `time.view_all`, `time.manage_all`, `projects.view`, 
 |---|---|
 | `npm run dev` | Development server |
 | `npm run build` / `npm start` | Production build and server |
-| `npm run db:push` | Apply the Prisma schema to the database |
-| `npm run db:seed` | Seed roles, admin and sample data (safe to re-run) |
+| `npm run db:migrate` | Apply pending migrations (`prisma migrate deploy`) |
+| `npm run db:migrate:new -- --name <name>` | Create a new migration from schema changes (review the SQL before applying) |
+| `npm run db:migrate:status` | Show which migrations a database has |
+| `npm run db:seed` | Seed roles and the Administrator (safe to re-run) |
 | `npm run db:studio` | Browse the database |
+| `npm run admin:recover` | Break-glass recovery of the Administrator account |
+| `npm test` / `npm run test:e2e` | Unit/API tests / browser smoke tests (local test database, see `docs/05-quality/testing.md`) |
 | `npm run lint` / `npm run typecheck` | ESLint / TypeScript |
+
+Schema changes always go through `prisma migrate` (D-006); don't use `db push` on a shared database.
 
 ## Deploying to Vercel
 
-Set `DATABASE_URL`, `DIRECT_URL` and `AUTH_SECRET` in the project environment. `postinstall` runs `prisma generate`; run `npm run db:push` once against the production database from your machine.
-
-For more than one instance (Vercel always), also set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` so the response cache and the rate limiter are shared by every instance (see below).
+Set `DATABASE_URL`, `DIRECT_URL`, `AUTH_SECRET`, `APP_URL` (https), `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` and the SMTP variables, and Node.js 24.x. A production server refuses to start without `APP_URL` or Redis. `postinstall` runs `prisma generate`; run `npm run db:migrate` against the production database before deploying a version with new migrations. Health check: `GET /api/health`.
 
 ## Reliability
 

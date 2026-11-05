@@ -63,7 +63,22 @@ type ApiInit = RequestInit & {
  *   key, so a retry after a dropped connection can never create a duplicate entry.
  * - A 401 triggers one token refresh and a transparent replay.
  */
-export async function api<T>(path: string, init: ApiInit = {}): Promise<T> {
+export function api<T>(path: string, init: ApiInit = {}): Promise<T> {
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method === "GET" || method === "HEAD" || init.idempotencyKey) return apiOnce<T>(path, init);
+  // A double click (or two handlers) sending the same change while the first is still on
+  // its way share one request and one Idempotency-Key, so it can't be applied twice (R-015).
+  const sig = `${method} ${path} ${init.json !== undefined ? JSON.stringify(init.json) : ""}`;
+  const pending = inflightMutations.get(sig);
+  if (pending) return pending as Promise<T>;
+  const p = apiOnce<T>(path, init).finally(() => inflightMutations.delete(sig));
+  inflightMutations.set(sig, p);
+  return p;
+}
+
+const inflightMutations = new Map<string, Promise<unknown>>();
+
+async function apiOnce<T>(path: string, init: ApiInit = {}): Promise<T> {
   const { json: body, retry = true, timeoutMs = REQUEST_TIMEOUT_MS, idempotencyKey, ...rest } = init;
   const method = (rest.method ?? "GET").toUpperCase();
   const mutating = method !== "GET" && method !== "HEAD";
@@ -147,8 +162,10 @@ async function apiFetch(path: string, rest: RequestInit, body: unknown, method: 
 async function finish<T>(res: Response): Promise<T> {
   if (res.status === 401) {
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      // Session expired: a full reload to the sign-in page clears all client state.
-      window.location.replace(new URL(`/login?next=${encodeURIComponent(window.location.pathname)}`, window.location.origin).toString());
+      // Session expired: a full reload to the sign-in page clears all client state. Open
+      // forms have already kept their drafts (R-038); sign-in returns to this exact page.
+      const here = window.location.pathname + window.location.search;
+      window.location.replace(new URL(`/login?expired=1&next=${encodeURIComponent(here)}`, window.location.origin).toString());
     }
     throw new ApiClientError("http", "Your session has expired. Sign in again.", 401);
   }
@@ -164,6 +181,74 @@ async function finish<T>(res: Response): Promise<T> {
     throw new ApiClientError("http", msg, res.status);
   }
   return data as T;
+}
+
+/** Data rows in a CSV text (records split on line breaks outside quotes), not counting the header. */
+export function countCsvRows(text: string) {
+  let records = 0;
+  let inQuotes = false;
+  let sawContent = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') inQuotes = !inQuotes;
+    else if (!inQuotes && (c === "\n" || c === "\r")) {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      if (sawContent) records++;
+      sawContent = false;
+      continue;
+    }
+    if (c !== "﻿") sawContent = true;
+  }
+  if (sawContent) records++;
+  return Math.max(0, records - 1);
+}
+
+/**
+ * Download a CSV through fetch (R-032, D-002): an expired session is refreshed like any
+ * other API call instead of silently saving an error page, and when the server announces
+ * the row count (`X-Total-Rows`) a short file is refused rather than saved. Returns the row count.
+ */
+export async function downloadCsv(path: string, fallbackName: string) {
+  const get = () => fetch(path, { credentials: "same-origin", cache: "no-store" });
+  let res: Response;
+  try {
+    res = await get();
+    if (res.status === 401 && (await refreshAccess())) res = await get();
+  } catch (e) {
+    throw classify(e);
+  }
+  if (!res.ok) {
+    // Session gone even after a refresh: finish() sends the browser to sign in and throws.
+    if (res.status === 401) await finish<never>(res);
+    let msg = `Download failed (${res.status}).`;
+    try {
+      msg = ((await res.json()) as { error?: string }).error ?? msg;
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiClientError("http", msg, res.status);
+  }
+  let text: string;
+  try {
+    text = await res.text();
+  } catch {
+    throw new ApiClientError("network", "The download was interrupted. Please try again; nothing was saved.");
+  }
+  const expected = res.headers.get("X-Total-Rows");
+  const rows = countCsvRows(text);
+  if (expected !== null && rows !== Number(expected)) {
+    throw new ApiClientError("http", `Export incomplete (${rows} of ${expected} rows arrived). Nothing was saved; please try again.`);
+  }
+  const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? fallbackName;
+  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return rows;
 }
 
 export function tzName() {

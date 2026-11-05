@@ -5,13 +5,13 @@ import { BarChart3, CalendarDays, Clock3, DollarSign, Download, FileSpreadsheet,
 import { ProjectDonut, StackedDayBars } from "@/components/charts";
 import { useUser } from "@/context/UserContext";
 import { useToast } from "@/context/ToastContext";
-import { errMsg, qs, rangeToInstants, tzName } from "@/lib/client";
+import { downloadCsv as fetchCsv, errMsg, qs, rangeToInstants, tzName } from "@/lib/client";
 import { useApi } from "@/lib/useApi";
 import type { ProjectDTO } from "@/app/api/projects/route";
 import type { MemberDTO } from "@/app/api/users/route";
 import type { ReportData, BillableFilter } from "@/lib/reports";
 import { PERIODS, daysInRange, fmtHours, fmtTime, periodRange, type PeriodKey } from "@/lib/time";
-import { Avatar, EmptyState, Kpi, PageHeader, ProjectDot, Seg, Skeleton, cx } from "@/components/ui";
+import { Avatar, EmptyState, Kpi, LoadError, PageHeader, ProjectDot, Seg, Skeleton, cx } from "@/components/ui";
 import { Select } from "@/components/Select";
 import { exportReportPdf } from "@/lib/report-pdf";
 
@@ -56,7 +56,9 @@ export function ReportsView() {
   const [memberId, setMemberId] = useState<string>(canAll ? "all" : "me");
   const [projectId, setProjectId] = useState("");
   const [billable, setBillable] = useState<BillableFilter>("all");
+  const [autoStoppedOnly, setAutoStoppedOnly] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [downloading, setDownloading] = useState<"detailed" | "summary" | null>(null);
   const [page, setPage] = useState(1);
   const PAGE = 25;
 
@@ -67,7 +69,10 @@ export function ReportsView() {
 
   const validRange = !!range.from && !!range.to && range.from <= range.to;
   // The summary level doesn't need the entry list, which is most of the payload.
-  const baseQuery = useMemo(() => qs({ ...rangeToInstants(range.from, range.to), tz: tzName(), userId: memberId, projectId, billable: billable === "all" ? "" : billable }), [range, memberId, projectId, billable]);
+  const baseQuery = useMemo(
+    () => qs({ ...rangeToInstants(range.from, range.to), tz: tzName(), userId: memberId, projectId, billable: billable === "all" ? "" : billable, autoStopped: autoStoppedOnly ? "1" : "" }),
+    [range, memberId, projectId, billable, autoStoppedOnly],
+  );
   const query = `${baseQuery}&kind=${level}`;
   const reportQ = useApi<{ report: ReportData }>(validRange ? `/api/reports${query}` : null, { ttlMs: 30_000 });
   const report = reportQ.data?.report ?? null;
@@ -84,20 +89,25 @@ export function ReportsView() {
   const projectLabel = projectId === "none" ? "No project" : projectId ? projects.find((p) => p.id === projectId)?.name ?? "Project" : "All projects";
   const billingLabel = billable === "billable" ? "Billable only" : billable === "non_billable" ? "Non-billable only" : "All entries";
 
-  const downloadCsv = (kind: "detailed" | "summary") => {
-    // A file download, not a page navigation: trigger it through a temporary anchor.
-    const a = document.createElement("a");
-    a.href = `/api/reports/export${baseQuery}&kind=${kind}`;
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  const downloadCsv = async (kind: "detailed" | "summary") => {
+    setDownloading(kind);
+    try {
+      const rows = await fetchCsv(`/api/reports/export${baseQuery}&kind=${kind}`, `bitsclock-${kind}-report.csv`);
+      if (kind === "detailed") toast.success("CSV downloaded", `${rows.toLocaleString()} entries, checked complete.`);
+    } catch (e) {
+      toast.error("Couldn't export the CSV", errMsg(e));
+    } finally {
+      setDownloading(null);
+    }
   };
   const downloadPdf = async () => {
     if (!report) return;
     setExporting(true);
     try {
-      await exportReportPdf(report, { title: "Time report", periodLabel, from: range.from, to: range.to, preparedFor: user.name, scopeLabel, projectLabel, billingLabel, tz: tzName() }, level === "detailed");
+      // Above the on-screen cap the PDF would be incomplete, so it carries the summary only (D-002).
+      const detailed = level === "detailed" && !report.truncated;
+      if (level === "detailed" && report.truncated) toast.info("PDF has the summary only", `This report has ${report.totals.entries.toLocaleString()} entries. Use CSV for every entry.`);
+      await exportReportPdf(report, { title: "Time report", periodLabel, from: range.from, to: range.to, preparedFor: user.name, scopeLabel, projectLabel, billingLabel, tz: tzName() }, detailed);
     } catch (e) {
       toast.error("Couldn't build the PDF", errMsg(e));
     } finally {
@@ -116,8 +126,8 @@ export function ReportsView() {
         subtitle="Pick a period and filters; the report updates as you change them."
         actions={canExport ? (
           <>
-            <button type="button" className="btn btn-secondary" onClick={() => downloadCsv("detailed")} disabled={!report || !t?.entries}><FileSpreadsheet className="h-4 w-4" /> CSV</button>
-            <button type="button" className="btn btn-secondary" onClick={() => downloadCsv("summary")} disabled={!report || !t?.entries}><Download className="h-4 w-4" /> Summary CSV</button>
+            <button type="button" className="btn btn-secondary" onClick={() => downloadCsv("detailed")} disabled={!report || !t?.entries || !!downloading}><FileSpreadsheet className="h-4 w-4" /> {downloading === "detailed" ? "Downloading…" : "CSV"}</button>
+            <button type="button" className="btn btn-secondary" onClick={() => downloadCsv("summary")} disabled={!report || !t?.entries || !!downloading}><Download className="h-4 w-4" /> {downloading === "summary" ? "Downloading…" : "Summary CSV"}</button>
             <button type="button" className="btn btn-dark" onClick={downloadPdf} disabled={!report || exporting}><FileText className="h-4 w-4" /> {exporting ? "Building…" : "Export PDF"}</button>
           </>
         ) : null}
@@ -144,7 +154,7 @@ export function ReportsView() {
               id="r-member"
               value={memberId}
               onChange={setMemberId}
-              options={[{ value: "all", label: "Whole team", color: "#1e2a24" as string | null }, { value: "me", label: "Only me", avatar: user.name }, ...members.filter((m) => m.id !== user.id).map((m) => ({ value: m.id, label: m.name, avatar: m.name, hint: m.isActive ? m.jobTitle || undefined : "Deactivated" }))]}
+              options={[{ value: "all", label: "Whole team", color: "#1d2129" as string | null }, { value: "me", label: "Only me", avatar: user.name }, ...members.filter((m) => m.id !== user.id).map((m) => ({ value: m.id, label: m.name, avatar: m.name, hint: m.isActive ? m.jobTitle || undefined : "Deactivated" }))]}
               searchPlaceholder="Search members…"
             />
           </div>
@@ -163,17 +173,23 @@ export function ReportsView() {
           <label className="label" htmlFor="r-billing">Billing</label>
           <Select id="r-billing" value={billable} onChange={(v) => setBillable(v as BillableFilter)} options={[{ value: "all", label: "All entries" }, { value: "billable", label: "Billable" }, { value: "non_billable", label: "Non-billable" }]} />
         </div>
+        <div className="shrink-0">
+          <span className="label" aria-hidden="true">&nbsp;</span>
+          <button type="button" aria-pressed={autoStoppedOnly} className={cx("chip h-[42px]", autoStoppedOnly && "on")} onClick={() => { setAutoStoppedOnly((v) => !v); setPage(1); }} title="Entries closed automatically after 24 hours">
+            Auto-stopped only
+          </button>
+        </div>
         <div className="shrink-0 xl:ml-auto">
           <label className="label">Level</label>
           <div className="flex h-[42px] items-center">
-            <Seg value={level} onChange={setLevel} options={[{ value: "summary", label: "Summary" }, { value: "detailed", label: "Detailed" }]} />
+            <Seg label="Report level" value={level} onChange={setLevel} options={[{ value: "summary", label: "Summary" }, { value: "detailed", label: "Detailed" }]} />
           </div>
         </div>
       </section>
 
-      {reportQ.error && <p className="rounded-2xl bg-[#fbe5e5] px-4 py-3 text-sm text-[#b5322b]">{reportQ.error}</p>}
-
-      {!report ? (
+      {reportQ.error && !report ? (
+        <LoadError what="the report" message={reportQ.error} onRetry={reportQ.refresh} />
+      ) : !report ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[84px]" />)}</div>
       ) : t ? (
         <div className={cx("space-y-5 transition-opacity", reportQ.stale && "opacity-70")}>
@@ -257,7 +273,7 @@ export function ReportsView() {
               {level === "detailed" && (
                 <section className="card overflow-x-auto" aria-label="Time entries">
                   <div className="flex items-center justify-between px-5 pb-1 pt-5">
-                    <h2 className="text-base font-extrabold text-ink-900">Time entries <span className="text-sm font-semibold text-ink-500">({report.entries.length})</span></h2>
+                    <h2 className="text-base font-extrabold text-ink-900">Time entries <span className="text-sm font-semibold text-ink-500">({report.truncated ? `${report.entries.length.toLocaleString()} of ${t.entries.toLocaleString()}` : report.entries.length})</span></h2>
                     {pages > 1 && (
                       <div className="flex items-center gap-2 text-sm">
                         <button type="button" className="btn btn-secondary btn-sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
@@ -266,6 +282,11 @@ export function ReportsView() {
                       </div>
                     )}
                   </div>
+                  {report.truncated && (
+                    <p role="status" className="mx-5 mb-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                      Showing the newest {report.entries.length.toLocaleString()} of {t.entries.toLocaleString()} entries. Export CSV for the full list; the totals above include every entry.
+                    </p>
+                  )}
                   <table className="table min-w-[760px]">
                     <thead><tr><th>Date</th><th>Member</th><th>Project</th><th>Description</th><th>Start – End</th><th className="num">Duration</th><th>Billable</th></tr></thead>
                     <tbody>
@@ -274,7 +295,10 @@ export function ReportsView() {
                           <td className="whitespace-nowrap text-ink-700"><span className="inline-flex items-center gap-1.5"><CalendarDays className="h-3.5 w-3.5 text-ink-400" />{new Date(e.startTime).toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" })}</span></td>
                           <td className="whitespace-nowrap">{e.user.name}</td>
                           <td className="whitespace-nowrap"><span className="inline-flex items-center gap-1.5"><ProjectDot color={e.project?.color} />{e.project?.name ?? "No project"}</span></td>
-                          <td className="max-w-xs truncate">{e.description || <span className="italic text-ink-400">No description</span>}</td>
+                          <td className="max-w-xs truncate">
+                            {e.autoStopped && <span className="mr-1.5 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900" title="Closed automatically after 24 hours">Auto-stopped</span>}
+                            {e.description || <span className="italic text-ink-400">No description</span>}
+                          </td>
                           <td className="tabular whitespace-nowrap text-ink-500">{fmtTime(e.startTime)} – {e.endTime ? fmtTime(e.endTime) : "…"}</td>
                           <td className="num font-bold text-ink-900">{fmtHours(e.durationSeconds)}</td>
                           <td>{e.billable ? <span className="delta-up">Billable</span> : <span className="text-ink-400">—</span>}</td>

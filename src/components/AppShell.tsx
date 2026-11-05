@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, BarChart3, Bell, CalendarDays, Clock3, FolderKanban, LayoutGrid, LogOut, Menu, Settings, ShieldCheck, Square, UserRound, Users, X } from "lucide-react";
+import { useFocusTrap } from "@/lib/focus";
+import { Activity, BarChart3, CalendarDays, Clock3, FolderKanban, LayoutGrid, LogOut, Menu, Settings, ShieldCheck, Square, UserRound, Users, X } from "lucide-react";
 import { GlobalSearch } from "./GlobalSearch";
 import { SystemAlerts } from "./SystemAlerts";
 import { applyPrefs } from "@/lib/prefs";
@@ -26,7 +27,7 @@ const NAV: NavItem[] = [
   { href: "/projects", label: "Projects", icon: FolderKanban, any: ["projects.view", "projects.manage"] },
   { href: "/reports", label: "Reports", icon: BarChart3, any: ["reports.view_own", "reports.view_all"] },
   { href: "/analytics", label: "Analytics", icon: Activity, any: ["reports.view_own", "reports.view_all"] },
-  { href: "/team", label: "Team", icon: Users, any: ["users.view", "users.manage"] },
+  { href: "/team", label: "Team", icon: Users, any: ["users.view", "users.manage", "users.request", "users.deactivate"] },
   { href: "/roles", label: "Roles & permissions", icon: ShieldCheck, any: ["roles.manage"] },
 ];
 
@@ -132,6 +133,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [drawer, setDrawer] = useState(false);
   const logout = useLogout();
   useEffect(() => setDrawer(false), [pathname]);
+  // The mobile drawer is a dialog: focus moves in, Tab stays in, Esc closes, focus returns (R-034).
+  const drawerRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(drawerRef, drawer);
+  useEffect(() => {
+    if (!drawer) return;
+    drawerRef.current?.querySelector<HTMLElement>("a, button")?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setDrawer(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [drawer]);
 
   // Apply saved display preferences, and warm the client cache with one bulk call
   // instead of a separate request per list.
@@ -167,10 +178,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         aria-current={active ? "page" : undefined}
         className={cx("group flex items-center gap-3 rounded-full transition-colors", labels ? "px-2 py-1.5 hover:bg-ink-50" : "")}
       >
-        <span className={cx("flex h-10 w-10 items-center justify-center rounded-full transition-colors", active ? "bg-ink-900 text-white shadow-float" : "text-ink-500 group-hover:bg-ink-100 group-hover:text-ink-900")}>
+        <span className={cx("flex h-10 w-10 items-center justify-center rounded-full transition-colors", active ? "bg-brand-600 text-white shadow-float" : "text-ink-500 group-hover:bg-brand-50 group-hover:text-brand-600")}>
           <Icon className="h-[19px] w-[19px]" strokeWidth={2} />
         </span>
-        {labels && <span className={cx("text-sm", active ? "font-bold text-ink-900" : "font-semibold text-ink-700")}>{n.label}</span>}
+        {labels && <span className={cx("text-sm", active ? "font-bold text-brand-600" : "font-semibold text-ink-700")}>{n.label}</span>}
       </Link>
     );
   };
@@ -184,7 +195,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       className={cx("group flex cursor-pointer items-center gap-3 rounded-full transition-colors", labels ? "w-full px-2 py-1.5 hover:bg-[#fbe5e5]" : "")}
     >
       {/* Muted red at rest (like the other idle rail icons), full red on hover; arrow mirrored to point out to the left. */}
-      <span className="flex h-10 w-10 items-center justify-center rounded-full text-[#e3938d] transition-colors group-hover:bg-[#fbe5e5] group-hover:text-[#c7423a]">
+      {/* #c25550 keeps the muted look but meets 3:1 for icons (R-035). */}
+      <span className="flex h-10 w-10 items-center justify-center rounded-full text-[#c25550] transition-colors group-hover:bg-[#fbe5e5] group-hover:text-[#a8352e]">
         <LogOut className="h-[19px] w-[19px] -scale-x-100" strokeWidth={2} />
       </span>
       {labels && <span className="text-sm font-semibold text-[#c7423a]">Sign out</span>}
@@ -192,7 +204,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   const rail = (
-    <div className="flex h-full flex-col items-center justify-between rounded-full bg-white px-1.5 py-3 shadow-card">
+    <nav aria-label="Main" className="flex h-full flex-col items-center justify-between rounded-full bg-white px-1.5 py-3 shadow-card">
       <div className="flex min-h-0 flex-col items-center gap-1.5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">{items.map((n) => railButton(n, false))}</div>
       <div className="flex shrink-0 flex-col items-center gap-1.5 pt-2">
         {railButton({ href: "/settings", label: "Settings", icon: Settings }, false)}
@@ -201,11 +213,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <UserMenu />
         </div>
       </div>
-    </div>
+    </nav>
   );
 
   return (
-    <div className="h-screen overflow-hidden px-4 py-4 sm:px-5 lg:px-6">
+    // h-dvh: the visible height on phones, where browser toolbars come and go (R-041).
+    <div className="h-dvh overflow-hidden px-4 py-4 sm:px-5 lg:px-6">
+      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-full focus:bg-brand-600 focus:px-4 focus:py-2 focus:text-sm focus:font-bold focus:text-white">
+        Skip to content
+      </a>
       <div className="flex h-full gap-4 lg:gap-6">
         {/* Left column: logo in the corner, pill rail beneath it. Fixed; only the content scrolls. */}
         <aside className="hidden h-full w-[56px] shrink-0 flex-col items-center lg:flex">
@@ -219,7 +235,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {drawer && (
           <div className="fixed inset-0 z-40 lg:hidden">
             <div className="absolute inset-0 bg-ink-900/30 backdrop-blur-sm" onClick={() => setDrawer(false)} />
-            <div className="fade-up absolute inset-y-3 left-3 w-72 max-w-[85vw] rounded-3xl bg-white p-4 shadow-pop">
+            <div ref={drawerRef} role="dialog" aria-modal="true" aria-label="Menu" className="fade-up absolute inset-y-3 left-3 w-72 max-w-[85vw] overflow-y-auto rounded-3xl bg-white p-4 shadow-pop">
               <div className="mb-4 flex items-center justify-between">
                 <span className="flex items-center gap-2">
                   <Logo size={32} />
@@ -254,15 +270,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex items-center gap-3">
               <TimerPill />
               <GlobalSearch />
-              <button type="button" aria-label="Notifications" className="btn btn-icon h-11 w-11 bg-white text-ink-700 shadow-card hover:bg-ink-50">
-                <Bell className="h-[18px] w-[18px]" />
-              </button>
+              {/* The notifications bell was removed until notifications exist (R-057). */}
               <div className="lg:hidden">
                 <UserMenu />
               </div>
             </div>
           </header>
-          <main className="-mr-2 min-h-0 flex-1 overflow-y-auto pb-6 pr-2">
+          <main id="main" tabIndex={-1} className="relative -mr-2 min-h-0 flex-1 overflow-y-auto pb-6 pr-2 focus:outline-none">
             <SystemAlerts />
             {children}
           </main>

@@ -10,7 +10,7 @@ import { qs, tzName } from "@/lib/client";
 import { useApi } from "@/lib/useApi";
 import type { DashboardDTO } from "@/app/api/dashboard/route";
 import { addDays, dayKey, fmtClock, fmtHours, fmtTime, startOfDay, startOfMonth, startOfWeek } from "@/lib/time";
-import { Avatar, EmptyState, Kpi, MiniBars, MiniLine, Progress, ProjectDot, Skeleton } from "@/components/ui";
+import { Avatar, EmptyState, Kpi, LoadError, MiniBars, MiniLine, Progress, ProjectDot, Skeleton } from "@/components/ui";
 
 function LiveElapsed({ since }: { since: string }) {
   const [now, setNow] = useState(() => Date.now());
@@ -44,13 +44,13 @@ export function DashboardView() {
     const now = new Date();
     return `/api/dashboard${qs({ tz: tzName(), dayStart: startOfDay(now).toISOString(), weekStart: startOfWeek(now).toISOString(), monthStart: startOfMonth(now).toISOString() })}`;
   }, []);
-  const { data, error } = useApi<DashboardDTO>(url, { ttlMs: 20_000 });
+  const { data, error, refresh } = useApi<DashboardDTO>(url, { ttlMs: 20_000 });
 
   const mySeries = useMemo(() => (data ? weekSeries(data.me.week) : []), [data]);
   const teamSeries = useMemo(() => (data?.team ? weekSeries(data.team.week) : []), [data]);
   const todaySeconds = (data?.me.todaySeconds ?? 0) + (timer.active && dayKey(timer.active.startTime) === dayKey(new Date()) ? timer.elapsed : 0);
 
-  if (error) return <p className="rounded-2xl bg-[#fbe5e5] px-4 py-3 text-sm text-[#b5322b]">{error}</p>;
+  if (error && !data) return <LoadError what="your dashboard" message={error} onRetry={refresh} />;
 
   if (!data) {
     return (
@@ -147,7 +147,7 @@ export function DashboardView() {
             <ul className="px-2 pb-2">
               {data.me.recent.map((e) => (
                 <li key={e.id} className="flex items-center gap-3 rounded-2xl px-3 py-2.5 transition-colors hover:bg-ink-50">
-                  <span className="h-9 w-1 rounded-full" style={{ background: e.project?.color ?? "#c3cac6" }} aria-hidden="true" />
+                  <span className="h-9 w-1 rounded-full" style={{ background: e.project?.color ?? "#ccd0d6" }} aria-hidden="true" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-bold text-ink-900">{e.description || e.project?.name || "No description"}</p>
                     <p className="text-xs text-ink-500">{e.project?.name ?? "No project"} · {new Date(e.startTime).toLocaleDateString([], { month: "short", day: "numeric" })}, {fmtTime(e.startTime)}</p>

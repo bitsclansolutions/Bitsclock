@@ -16,21 +16,28 @@ export type MemberDTO = {
   projectCount: number;
   /** Start of their most recent entry, or null (full listing only). */
   lastActiveAt: string | null;
+  /** Their last invitation / password email couldn't be sent (full listing only, R-049). */
+  inviteEmailFailed: boolean;
+  /** Set for deleted members (D-011, Administrator's "Deleted" filter only). */
+  deletedAt: string | null;
 };
 
 /**
  * Member list.
  * - full (users.view): every member with email, status, running timer and totals.
  * - otherwise (pickers): active members with id, name and role only.
+ * - deleted (Administrator, D-011): only deleted members, with the same full details, so the
+ *   Team page can show them with the same card and row. Their email on record is shown.
  */
-export async function loadMembers(weekStart: Date, full: boolean): Promise<MemberDTO[]> {
+export async function loadMembers(weekStart: Date, full: boolean, opts: { deleted?: boolean } = {}): Promise<MemberDTO[]> {
   const users = await prisma.user.findMany({
-    where: full ? {} : { isActive: true },
+    // Deleted members never appear in the normal list or any picker.
+    where: opts.deleted ? { deletedAt: { not: null } } : full ? { deletedAt: null } : { isActive: true, deletedAt: null },
     include: { role: { select: { id: true, name: true, color: true } } },
-    orderBy: [{ isActive: "desc" }, { name: "asc" }],
+    orderBy: opts.deleted ? [{ deletedAt: "desc" }] : [{ isActive: "desc" }, { name: "asc" }],
   });
-  if (!full) {
-    return users.map((u) => ({ id: u.id, name: u.name, email: "", jobTitle: "", isActive: true, createdAt: "", role: u.role, running: false, weekSeconds: 0, totalSeconds: 0, projectCount: 0, lastActiveAt: null }));
+  if (!full && !opts.deleted) {
+    return users.map((u) => ({ id: u.id, name: u.name, email: "", jobTitle: "", isActive: true, createdAt: "", role: u.role, running: false, weekSeconds: 0, totalSeconds: 0, projectCount: 0, lastActiveAt: null, inviteEmailFailed: false, deletedAt: null }));
   }
   const [running, week, totals, perProject] = await Promise.all([
     prisma.timeEntry.findMany({ where: { endTime: null }, select: { userId: true } }),
@@ -49,7 +56,8 @@ export async function loadMembers(weekStart: Date, full: boolean): Promise<Membe
   return users.map((u) => ({
     id: u.id,
     name: u.name,
-    email: u.email,
+    // A deleted member's real address is kept on record in deletedEmail.
+    email: u.deletedAt ? (u.deletedEmail ?? "") : u.email,
     jobTitle: u.jobTitle ?? "",
     isActive: u.isActive,
     createdAt: u.createdAt.toISOString(),
@@ -59,5 +67,7 @@ export async function loadMembers(weekStart: Date, full: boolean): Promise<Membe
     totalSeconds: totalMap.get(u.id)?.seconds ?? 0,
     projectCount: projectCounts.get(u.id) ?? 0,
     lastActiveAt: totalMap.get(u.id)?.last?.toISOString() ?? null,
+    inviteEmailFailed: !!u.inviteEmailFailedAt,
+    deletedAt: u.deletedAt?.toISOString() ?? null,
   }));
 }

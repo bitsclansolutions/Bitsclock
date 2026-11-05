@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { Prisma, prisma } from "@/lib/prisma";
 import { ApiError, handler, json, parseBody, requireId, requirePermission, type RouteParams } from "@/lib/api";
 import { projectUpdateSchema } from "@/lib/validation";
 import { validateMemberIds } from "@/lib/projects";
@@ -47,10 +47,15 @@ export const DELETE = handler<RouteParams<{ id: string }>>(async (_req, { params
   const id = requireId((await params).id, "Project");
   const existing = await prisma.project.findUnique({ where: { id }, include: { _count: { select: { timeEntries: true } } } });
   if (!existing) throw new ApiError(404, "Project not found.");
-  if (existing._count.timeEntries > 0) {
-    throw new ApiError(409, `"${existing.name}" has ${existing._count.timeEntries} time entries. Archive it instead of deleting.`);
+  const archiveInstead = (n: number) => new ApiError(409, `"${existing.name}" has ${n} time entries. Archive it instead of deleting.`);
+  if (existing._count.timeEntries > 0) throw archiveInstead(existing._count.timeEntries);
+  try {
+    await prisma.project.delete({ where: { id } });
+  } catch (e) {
+    // An entry was logged between the check and the delete; the database refused (onDelete: Restrict, L14).
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2003") throw archiveInstead(1);
+    throw e;
   }
-  await prisma.project.delete({ where: { id } });
   invalidateTags("projects");
   return json({ ok: true });
 });

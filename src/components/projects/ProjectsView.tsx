@@ -12,7 +12,7 @@ import { invalidate, useApi } from "@/lib/useApi";
 import type { ProjectDTO } from "@/app/api/projects/route";
 import type { MemberDTO } from "@/app/api/users/route";
 import { PROJECT_COLORS, fmtHours, initials } from "@/lib/time";
-import { Avatar, Badge, EmptyState, ErrorBanner, Field, Modal, PageHeader, Seg, Skeleton, cx } from "@/components/ui";
+import { Avatar, Badge, EmptyState, ErrorBanner, Field, LoadError, Modal, PageHeader, Seg, Skeleton, cx } from "@/components/ui";
 import { RowMenu, type RowMenuItem } from "@/components/RowMenu";
 
 type Kind = "project" | "activity";
@@ -58,7 +58,7 @@ function MemberPicker({ members, selected, onChange }: { members: MemberDTO[]; s
   const toggle = (id: string, on: boolean) => onChange(on ? [...selected, id] : selected.filter((x) => x !== id));
   return (
     <div className="rounded-2xl border border-ink-200">
-      <div className="flex items-center gap-2 border-b border-ink-100 px-3 py-2">
+      <div className="flex items-center gap-2 rounded-t-2xl border-b border-ink-100 px-3 py-2 focus-within:ring-2 focus-within:ring-inset focus-within:ring-brand-600">
         <Search className="h-4 w-4 text-ink-400" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search members…" aria-label="Search members" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />
         <button type="button" className="text-xs font-semibold text-brand-700 hover:underline" onClick={() => onChange(list.every((m) => selected.includes(m.id)) ? selected.filter((id) => !list.some((m) => m.id === id)) : Array.from(new Set([...selected, ...list.map((m) => m.id)])))}>
@@ -254,7 +254,9 @@ export function ProjectsView() {
         <Seg value={view} onChange={chooseView} label="View" options={[{ value: "cards", label: <span className="inline-flex items-center gap-1.5"><LayoutGrid className="h-3.5 w-3.5" /> Cards</span> }, { value: "list", label: <span className="inline-flex items-center gap-1.5"><List className="h-3.5 w-3.5" /> List</span> }]} />
       </div>
 
-      {projects === null ? (
+      {projects === null && projectsQ.error ? (
+        <LoadError what="projects" message={projectsQ.error} onRetry={projectsQ.refresh} />
+      ) : projects === null ? (
         view === "cards" ? (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-60" />)}</div>
         ) : (

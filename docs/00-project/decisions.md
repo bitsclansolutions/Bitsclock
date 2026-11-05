@@ -92,7 +92,7 @@
 - Context: Audit P3, M11, M16, M19, M20, L14. Invariants live only in app code; `TimeEntry.user onDelete: Cascade`; `db push` with no history; `SUM(...)::int` overflow.
 - Decision:
   - Move to `prisma migrate`: baseline the current schema as the first migration, together with the Prisma 7 upgrade (D-008). No `db push` outside local prototyping.
-  - `TimeEntry.user` and `TimeEntry.project` become `onDelete: Restrict`. Users are deactivated, never deleted; projects with entries are archived (L14).
+  - `TimeEntry.user` and `TimeEntry.project` become `onDelete: Restrict`. Users are deactivated, never deleted; projects with entries are archived (L14). (Amended by D-011: members can be soft-deleted; the row itself is still never removed.)
   - Constraints: `CHECK (endTime IS NULL OR endTime > startTime)`; partial unique index "one running timer per user" (`WHERE endTime IS NULL`, which also speeds the running-timer lookup in M20); `kind` and `memberMode` become enums.
   - Aggregates cast with `::float8` instead of `::int`.
 - Claude's reasoning: the database is the last defense against races and future bugs; migrations give history and rollback.
@@ -138,3 +138,42 @@
   - Assume production config may differ from local `.env`; list every env-dependent behaviour.
 - Claude's reasoning: different methods catch different bugs; matrices turn "did anyone think of it" into "is every cell filled".
 - Revisit when: a later audit finds a miss that a matrix should have caught (add a matrix).
+
+## D-010: Sign-in errors stay non-revealing; clearer wording instead of separate messages
+- Date: 2026-11-05
+- Status: accepted (owner chose option A)
+- Type: 1 (auth)
+- Context: the owner asked for separate "email not registered" / "wrong password" messages, possibly using a Bloom filter to check registration.
+- Options: (A) one message for both, made clearer (chosen); (B) separate messages; (C) separate messages with a Bloom filter in front.
+- Decision:
+  - Unknown email and wrong password return the same 401 and the same text: "That email and password don't match. Check both, or reset your password." The form shows a "Reset your password" link with it. Timing stays equal (dummy bcrypt compare).
+  - The form checks format itself before sending: empty email, malformed email, empty password, each shown under its field.
+  - A lockout (429) says how long to wait.
+  - "Deactivated" is shown only after the right password, so it reveals nothing to a stranger.
+  - Forgot-password stays non-revealing as before.
+- Why not a Bloom filter: it answers only "definitely not" or "maybe", so the database lookup is still needed; the email lookup is already one indexed query; it would need rebuilding on every server instance and syncing on invite/deactivate; and it doesn't change what the message reveals.
+- Revisit when: the app gets public self-sign-up (then the sign-up form reveals registration anyway and the trade-off changes).
+
+## D-011: Members can be deleted as a soft delete; their time entries stay
+- Date: 2026-11-06
+- Status: accepted (owner chose soft delete, Administrator only)
+- Type: 1 (data model, permissions). Amends D-006's "users are deactivated, never deleted".
+- Context: the owner wants departed members gone from the Team page, with their logged time kept.
+- Options: (A) soft delete, chosen; (B) soft delete + erase name and email; (C) hard delete with a name copied onto every entry and a nullable user link.
+- Decision:
+  - `bc_users` gets `deletedAt` and `deletedEmail` (migration `20261106000000_member_soft_delete`, additive).
+  - Delete (Administrator only, never the Administrator account or yourself), in one transaction: deactivate, bump tokenVersion, revoke sessions and reset codes, stop a running timer, remove project memberships, move the email to `deletedEmail` and put a placeholder in `email` (frees the address), audit `user.delete`.
+  - Deleted members are hidden from Team, pickers, filters and counts. Their entries keep `userId` (D-006's Restrict FK stands; the row is never removed) and show as "Name (deleted)" in lists, reports, CSV and PDF.
+  - Restore (Administrator) puts the email back if still free (409 otherwise) and returns the member deactivated. Audited `user.restore`.
+- Revisit when: a privacy erasure request arrives (then add option B as a separate "erase personal data" action).
+
+## Implementation notes — 2026-11-05 fix run
+Choices made while implementing the decisions above, for the owner to veto. None changes a decision's substance.
+- **Order (D-006/D-007/D-008):** the Prisma 7 upgrade and migration baseline were done right after the test harness instead of last. D-001, D-003, D-005 and D-006 all change the schema, and D-006's CHECK and partial unique index can't be expressed with `db push`, so migrations had to exist first. D-007's condition (tests before the upgrade) was met: 42 tests covering raw SQL, timezone buckets and advisory locks passed on Prisma 6 first, then on 7.
+- **Test database (D-007):** Postgres 18 inside WSL Ubuntu on the development machine (the "local container" option). A separate Supabase project was not used.
+- **Test schema:** Prisma 7 refuses `migrate reset` when run by an AI agent without the owner's consent, so tests apply migrations with `migrate deploy` and empty tables per file. `scripts/recreate-test-db.sh` recreates the local test database if a migration is ever edited.
+- **D-001:** member deletion was removed entirely (D-006 "never deleted"); decided member requests are deleted when their role is deleted (the audit log keeps the history).
+- **D-002:** the timesheet calendar's entry list shows a notice above 500 entries rather than paging the calendar.
+- **D-003:** access tokens now carry the session id (R-060) so single-device sign-out is immediate; cached for 60 s per session with tag invalidation.
+- **D-005:** a running timer moved back more than 24 h is closed and flagged (not refused); stopping a timer on a now-archived project is refused with a hint to change the project (R-061), so the member isn't stuck.
+- **R-046:** Server Components can't clear cookies, so the layout redirects through `/api/auth/signed-out`, which clears them only when the session really is invalid.

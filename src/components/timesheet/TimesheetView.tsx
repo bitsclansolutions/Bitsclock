@@ -11,8 +11,8 @@ import type { EntryDTO } from "@/lib/entries";
 import type { ProjectDTO } from "@/app/api/projects/route";
 import type { MemberDTO } from "@/app/api/users/route";
 import type { TimesheetProject, TimesheetResponse } from "@/app/api/timesheet/route";
-import { addDays, combineDateTime, dayKey, fmtHours, fmtTime, fmtTimeText, initials, startOfDay, startOfMonth, startOfWeek } from "@/lib/time";
-import { EmptyState, ErrorBanner, Field, Kpi, Modal, PageHeader, ProjectDot, Seg, Skeleton, cx } from "@/components/ui";
+import { addDays, combineDateTime, dayKey, fmtHM, fmtHours, fmtTime, fmtTimeText, initials, startOfDay, startOfMonth, startOfWeek } from "@/lib/time";
+import { EmptyState, ErrorBanner, Field, Kpi, LoadError, Modal, PageHeader, ProjectDot, Seg, Skeleton, cx } from "@/components/ui";
 import { Select } from "@/components/Select";
 import { RowMenu } from "@/components/RowMenu";
 import { EntryModal } from "@/components/tracker/EntryModal";
@@ -47,12 +47,8 @@ function parseDuration(input: string): number | null {
   return null;
 }
 
-/** Compact cell value like "2:30". */
-function cellHours(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  return `${h}:${String(m).padStart(2, "0")}`;
-}
+/** Compact cell value like "2:30". Shared formatter: rounding minutes on their own showed "1:60" (R-052). */
+const cellHours = (seconds: number) => fmtHM(seconds);
 
 const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 const endOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
@@ -177,7 +173,7 @@ export function TimesheetView() {
   const membersQ = useApi<{ members: MemberDTO[] }>(canViewAll ? "/api/users" : null, { ttlMs: 60_000 });
   // Full entries are needed to draw calendar blocks (day/week) and the day's entry list.
   const needEntries = scope === "day" || (scope === "week" && calendar);
-  const dayQ = useApi<{ entries: EntryDTO[] }>(needEntries ? `/api/time-entries${qs({ from: range.from, to: range.to, tz: tzName(), userId: memberId })}` : null, { ttlMs: 15_000 });
+  const dayQ = useApi<{ entries: EntryDTO[]; nextCursor: string | null }>(needEntries ? `/api/time-entries${qs({ from: range.from, to: range.to, tz: tzName(), userId: memberId, limit: 500 })}` : null, { ttlMs: 15_000 });
 
   const projects = useMemo(() => projectsQ.data?.projects ?? [], [projectsQ.data]);
   const members = useMemo(() => membersQ.data?.members ?? [], [membersQ.data]);
@@ -342,7 +338,12 @@ export function TimesheetView() {
         <Kpi label={scope === "year" ? "Busiest month" : scope === "day" ? "Projects" : "Busiest day"} value={scope === "day" ? rows.filter((r) => grid.rowTotals.get(r.id)).length : (busiest?.label ?? "—")} sub={scope === "day" ? "with time today" : busiest ? fmtHours(busiest.secs) : "Log time to see it"} icon={<Clock3 className="h-5 w-5" />} />
       </div>
 
-      {sheetQ.error && <div className="mb-4"><ErrorBanner message={sheetQ.error} /></div>}
+      {sheetQ.error && !sheetQ.data && <LoadError className="mb-4" what="the timesheet" message={sheetQ.error} onRetry={sheetQ.refresh} />}
+      {dayQ.data?.nextCursor && (
+        <p role="status" className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          The calendar shows the newest 500 entries. Pick one member or a single day to see every block; the totals above include everything.
+        </p>
+      )}
 
       {calendar && (scope === "day" || scope === "week") ? (
         dayQ.loading && !dayQ.data ? (
@@ -379,7 +380,7 @@ export function TimesheetView() {
                 {cols.map((c) => (
                   <th key={c.key} className={cx("pb-2 pt-2 text-center text-[11px] font-semibold uppercase tracking-wide", compact ? "px-0.5" : "px-2", c.isNow ? "text-brand-700" : c.muted ? "text-ink-400" : "text-ink-500")}>
                     <span className="block">{c.top}</span>
-                    {c.bottom && <span className={cx("mx-auto mt-1 flex h-7 w-7 items-center justify-center rounded-full text-sm font-extrabold normal-case tracking-normal", c.isNow ? "bg-ink-900 text-white" : "text-ink-800")}>{c.bottom}</span>}
+                    {c.bottom && <span className={cx("mx-auto mt-1 flex h-7 w-7 items-center justify-center rounded-full text-sm font-extrabold normal-case tracking-normal", c.isNow ? "bg-brand-600 text-white" : "text-ink-800")}>{c.bottom}</span>}
                   </th>
                 ))}
                 <th className="px-3 pb-2 pt-2 text-right text-[11px] font-semibold uppercase tracking-wide text-ink-500">Total</th>
@@ -390,7 +391,7 @@ export function TimesheetView() {
                 <tr key={r.id} className="group">
                   <td className="sticky left-0 z-10 rounded-l-2xl bg-white px-4 py-2 group-hover:bg-ink-50">
                     <div className="flex items-center gap-3">
-                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[11px] font-extrabold text-white" style={{ background: r.color ?? "#9aa39e" }} aria-hidden>{r.id === NONE ? "—" : initials(r.name)}</span>
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[11px] font-extrabold text-white" style={{ background: r.color ?? "#9aa0a9" }} aria-hidden>{r.id === NONE ? "—" : initials(r.name)}</span>
                       <div className="min-w-0">
                         <p className="truncate font-bold text-ink-900">{r.name}</p>
                         <p className="text-[11px] text-ink-500">{r.archived ? "Archived" : r.billable ? "Billable" : "Non-billable"}</p>
@@ -540,7 +541,7 @@ function CellDialog({
   const [error, setError] = useState("");
 
   const dayRange = cell ? rangeToInstants(cell.key, cell.key) : null;
-  const dayQ = useApi<{ entries: EntryDTO[] }>(dayRange ? `/api/time-entries${qs({ from: dayRange.from, to: dayRange.to, tz: tzName(), userId: memberId })}` : null, { ttlMs: 15_000 });
+  const dayQ = useApi<{ entries: EntryDTO[] }>(dayRange ? `/api/time-entries${qs({ from: dayRange.from, to: dayRange.to, tz: tzName(), userId: memberId, limit: 500 })}` : null, { ttlMs: 15_000 });
   const dayEntries = useMemo(() => (dayQ.data?.entries ?? []).filter((e) => !e.running), [dayQ.data]);
   const entries = useMemo(() => (cell ? dayEntries.filter((e) => (e.projectId ?? NONE) === cell.projectId).sort((a, b) => a.startTime.localeCompare(b.startTime)) : []), [dayEntries, cell]);
 

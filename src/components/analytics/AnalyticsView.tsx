@@ -12,7 +12,7 @@ import type { ReportResponse } from "@/app/api/reports/route";
 import type { BillableFilter, ReportData } from "@/lib/reports";
 import type { EntryDTO } from "@/lib/entries";
 import { PERIODS, dayKey, dayLabel, daysInRange, fmtHours, fmtTime, periodRange, type PeriodKey } from "@/lib/time";
-import { Avatar, EmptyState, ProjectDot, Skeleton, cx } from "@/components/ui";
+import { Avatar, EmptyState, LoadError, ProjectDot, Skeleton, cx } from "@/components/ui";
 import { Select } from "@/components/Select";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -166,7 +166,7 @@ export function AnalyticsView() {
               id="a-member"
               value={memberId}
               onChange={(v) => { setMemberId(v); setFocusMember(""); }}
-              options={[{ value: "all", label: "Whole team", color: "#1e2a24" as string | null }, { value: "me", label: "Only me", avatar: user.name }, ...members.filter((m) => m.id !== user.id).map((m) => ({ value: m.id, label: m.name, avatar: m.name, hint: m.isActive ? m.jobTitle || undefined : "Deactivated" }))]}
+              options={[{ value: "all", label: "Whole team", color: "#1d2129" as string | null }, { value: "me", label: "Only me", avatar: user.name }, ...members.filter((m) => m.id !== user.id).map((m) => ({ value: m.id, label: m.name, avatar: m.name, hint: m.isActive ? m.jobTitle || undefined : "Deactivated" }))]}
               searchPlaceholder="Search members…"
             />
           </div>
@@ -187,9 +187,9 @@ export function AnalyticsView() {
         </div>
       </section>
 
-      {reportQ.error && <p className="rounded-2xl bg-[#fbe5e5] px-4 py-3 text-sm text-[#b5322b]">{reportQ.error}</p>}
-
-      {!report || !t ? (
+      {reportQ.error && !report ? (
+        <LoadError what="analytics" message={reportQ.error} onRetry={reportQ.refresh} />
+      ) : !report || !t ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[84px]" />)}</div>
       ) : (
         <div className={cx("space-y-5 transition-opacity", reportQ.stale && "opacity-70")}>
@@ -243,7 +243,7 @@ export function AnalyticsView() {
                       const active = (x.id ?? "none") === projectId;
                       return (
                         <li key={x.id ?? "none"}>
-                          <button type="button" onClick={() => setProjectId(active ? "" : x.id ?? "none")} className={cx("w-full cursor-pointer rounded-2xl px-3 py-2.5 text-left transition-colors", active ? "bg-ink-900 text-white" : "hover:bg-ink-50")}>
+                          <button type="button" onClick={() => setProjectId(active ? "" : x.id ?? "none")} className={cx("w-full cursor-pointer rounded-2xl px-3 py-2.5 text-left transition-colors", active ? "bg-brand-600 text-white" : "hover:bg-ink-50")}>
                             <div className="flex items-center gap-3">
                               <ProjectDot color={x.color} />
                               <span className="min-w-0 flex-1 truncate text-sm font-bold">{x.name}</span>
@@ -276,7 +276,7 @@ export function AnalyticsView() {
                         const active = focusMember === m.id;
                         return (
                           <li key={m.id}>
-                            <button type="button" onClick={() => setFocusMember(active ? "" : m.id)} className={cx("flex w-full cursor-pointer items-center gap-3 rounded-2xl px-3 py-2 text-left transition-colors", active ? "bg-ink-900 text-white" : "hover:bg-ink-50")}>
+                            <button type="button" onClick={() => setFocusMember(active ? "" : m.id)} className={cx("flex w-full cursor-pointer items-center gap-3 rounded-2xl px-3 py-2 text-left transition-colors", active ? "bg-brand-600 text-white" : "hover:bg-ink-50")}>
                               <Avatar name={m.name} size="sm" />
                               <span className="min-w-0 flex-1">
                                 <span className="block truncate text-sm font-bold">{m.name}</span>
@@ -313,7 +313,7 @@ export function AnalyticsView() {
                 <section className={cx("card p-5", !(canAll && report.byMember.length > 1) && "lg:col-span-2")} aria-label="Time of day">
                   <h2 className="mb-3 text-base font-extrabold text-ink-900">Time of day</h2>
                   <div className="h-52">
-                    <HoursBars data={hours} color="#2a8f5c" tight labelSuffix=":00" />
+                    <HoursBars data={hours} color="#1f74e0" tight labelSuffix=":00" />
                   </div>
                 </section>
               </div>

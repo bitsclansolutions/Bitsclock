@@ -1,9 +1,9 @@
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
 import { prisma } from "./prisma";
-import { ADMIN_ROLE_NAME, ALL_PERMISSIONS, type Permission } from "./permissions";
+import { ADMIN_ROLE_NAME, ALL_PERMISSIONS, isGrantablePermission, type Permission } from "./permissions";
 import { cached } from "./server-cache";
-import { createRefreshSession, revokeRefreshSession, rotateRefreshSession } from "./sessions";
+import { createRefreshSession, isSessionLive, revokeRefreshSession, rotateRefreshSession } from "./sessions";
 
 /**
  * Session model
@@ -42,8 +42,9 @@ export type SessionUser = {
   isAdmin: boolean;
 };
 
-export async function createAccessToken(userId: string, tokenVersion: number) {
-  return new SignJWT({ v: tokenVersion, typ: "access" })
+/** `sid` is the refresh session this token belongs to; signing that device out ends the token too (R-060). */
+export async function createAccessToken(userId: string, tokenVersion: number, sessionId: string) {
+  return new SignJWT({ v: tokenVersion, typ: "access", sid: sessionId })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(userId)
     .setIssuer(ISSUER)
@@ -52,21 +53,32 @@ export async function createAccessToken(userId: string, tokenVersion: number) {
     .sign(secret());
 }
 
-/** Verify an access token: signature, expiry, issuer and type. Returns subject + version or null. */
-export async function verifyAccessToken(token: string): Promise<{ userId: string; version: number } | null> {
+/** Verify an access token: signature, expiry, issuer and type. Returns subject, version and session id, or null. */
+export async function verifyAccessToken(token: string): Promise<{ userId: string; version: number; sessionId: string | null } | null> {
   try {
     const { payload } = await jwtVerify(token, secret(), { issuer: ISSUER, algorithms: ["HS256"] });
     if (payload.typ !== "access" || typeof payload.sub !== "string" || typeof payload.v !== "number") return null;
-    return { userId: payload.sub, version: payload.v };
+    return { userId: payload.sub, version: payload.v, sessionId: typeof payload.sid === "string" ? payload.sid : null };
   } catch {
     return null;
   }
 }
 
+/**
+ * Cookies are Secure everywhere except a plain-http local development server (R-064).
+ * This no longer depends on NODE_ENV, so a production server started with the wrong
+ * NODE_ENV still never sends session cookies over plain HTTP.
+ */
+function cookiesMustBeSecure() {
+  const app = process.env.APP_URL?.trim();
+  if (app) return !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(app);
+  return process.env.NODE_ENV === "production";
+}
+
 const baseCookie = {
   httpOnly: true,
   sameSite: "lax" as const,
-  secure: process.env.NODE_ENV === "production",
+  secure: cookiesMustBeSecure(),
   path: "/",
 };
 
@@ -90,8 +102,8 @@ export async function clearSessionCookies(jar?: CookieJar) {
 
 /** Sign a user in: create a refresh session and issue both cookies. */
 export async function startSession(user: { id: string; tokenVersion: number }, opts: { remember: boolean; userAgent?: string | null; ip?: string | null }) {
-  const { raw } = await createRefreshSession(user.id, opts);
-  const access = await createAccessToken(user.id, user.tokenVersion);
+  const { raw, session } = await createRefreshSession(user, opts);
+  const access = await createAccessToken(user.id, user.tokenVersion, session.id);
   writeSessionCookies(await cookies(), access, raw, opts.remember);
 }
 
@@ -109,19 +121,15 @@ export async function refreshSession(meta: { userAgent?: string | null; ip?: str
     await clearSessionCookies(target);
     return null;
   }
+  // rotateRefreshSession already refuses inactive users and sessions from before a reset.
   const rotated = await rotateRefreshSession(raw, meta);
   if (!rotated) {
     await clearSessionCookies(target);
     return null;
   }
-  const user = await prisma.user.findUnique({ where: { id: rotated.userId }, select: { id: true, tokenVersion: true, isActive: true } });
-  if (!user || !user.isActive) {
-    await clearSessionCookies(target);
-    return null;
-  }
-  const access = await createAccessToken(user.id, user.tokenVersion);
+  const access = await createAccessToken(rotated.userId, rotated.tokenVersion, rotated.sessionId);
   writeSessionCookies(target, access, rotated.raw, rotated.remember);
-  return user.id;
+  return rotated.userId;
 }
 
 /** Sign out this device: revoke its refresh session and clear both cookies. */
@@ -144,7 +152,8 @@ type UserRow = {
 
 export function toSessionUser(u: UserRow): SessionUser {
   const isAdmin = u.role.name === ADMIN_ROLE_NAME;
-  const permissions = isAdmin ? [...ALL_PERMISSIONS] : (u.role.permissions.map((p) => p.permission) as Permission[]);
+  // Admin-only permissions are ignored on any other role even if a row grants them (D-001).
+  const permissions = isAdmin ? [...ALL_PERMISSIONS] : (u.role.permissions.map((p) => p.permission).filter(isGrantablePermission) as Permission[]);
   return {
     id: u.id,
     email: u.email,
@@ -159,6 +168,17 @@ export function toSessionUser(u: UserRow): SessionUser {
 
 export const userWithRole = { include: { role: { include: { permissions: true } } } } as const;
 
+/** What a signed-in session needs, and nothing more (no password hash). */
+export const sessionUserSelect = {
+  id: true,
+  email: true,
+  name: true,
+  jobTitle: true,
+  isActive: true,
+  tokenVersion: true,
+  role: { select: { id: true, name: true, color: true, isSystem: true, permissions: { select: { permission: true } } } },
+} as const;
+
 /**
  * Current user from the access cookie, or null. Every API handler and app page goes
  * through here: the token must verify, the user must exist, be active, and the
@@ -171,10 +191,18 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   const claims = await verifyAccessToken(token);
   if (!claims) return null;
   // Cached for a minute; member, role and password mutations invalidate the "users"/"roles" tags.
+  // Only the fields a session needs are loaded and cached, never the password hash (R-018).
   const user = await cached(`session:${claims.userId}`, { ttlMs: 60_000, tags: ["users", "roles"] }, () =>
-    prisma.user.findUnique({ where: { id: claims.userId }, ...userWithRole }),
+    prisma.user.findUnique({ where: { id: claims.userId }, select: sessionUserSelect }),
   );
   if (!user || !user.isActive || user.tokenVersion !== claims.version) return null;
+  // The device this token was issued to must still be signed in (R-060). Tokens issued
+  // before session ids existed carry none and simply expire within 15 minutes.
+  if (claims.sessionId) {
+    const sid = claims.sessionId;
+    const live = await cached(`sid:${sid}`, { ttlMs: 60_000, tags: ["users"] }, () => isSessionLive(sid));
+    if (!live) return null;
+  }
   return toSessionUser(user);
 }
 

@@ -1,8 +1,8 @@
-import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { Prisma, prisma } from "@/lib/prisma";
 import { handler, jsonCached, requireAnyPermission } from "@/lib/api";
 import { parseReportQuery } from "@/lib/report-query";
-import { cached, paramsKey } from "@/lib/server-cache";
+import { entrySql } from "@/lib/entry-filter";
+import { cached, entryTags, paramsKey } from "@/lib/server-cache";
 
 export type TimesheetCell = {
   /** Project id, or null for entries without a project. */
@@ -21,26 +21,26 @@ export type TimesheetResponse = { cells: TimesheetCell[]; projects: TimesheetPro
 /**
  * Hours per project per local day for the timesheet grid, aggregated in PostgreSQL
  * (one GROUP BY on the indexed time range) so a whole year is a few hundred rows.
- * Running timers are left out. Scoped by parseReportQuery: without time.view_all the
- * caller only ever gets their own time.
+ * Running timers are left out. Uses the shared entry filter (R-031), so project,
+ * billable and search filters mean the same here as in reports. Scoped by
+ * parseReportQuery: without time.view_all the caller only ever gets their own time.
  */
 export const GET = handler(async (req) => {
   const me = await requireAnyPermission("time.track", "time.view_all");
   const url = new URL(req.url);
   const f = parseReportQuery(url, me, "time.view_all");
-  const data = await cached<TimesheetResponse>(`timesheet:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 15_000, tags: ["entries", "projects"] }, async () => {
+  const data = await cached<TimesheetResponse>(`timesheet:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 15_000, tags: [...entryTags(f.userIds), "projects", "roles"] }, async () => {
     if (f.userIds && f.userIds.length === 0) return { cells: [], projects: [] };
-    const cells = await prisma.$queryRaw<TimesheetCell[]>(Prisma.sql`
+    const rows = await prisma.$queryRaw<{ projectId: string | null; key: string; seconds: number; billableSeconds: number; count: number }[]>(Prisma.sql`
       SELECT e."projectId",
              to_char((e."startTime" AT TIME ZONE 'UTC') AT TIME ZONE ${f.tz}, 'YYYY-MM-DD') AS key,
-             COALESCE(SUM(e."durationSeconds"), 0)::int AS seconds,
-             COALESCE(SUM(CASE WHEN e."billable" THEN e."durationSeconds" ELSE 0 END), 0)::int AS "billableSeconds",
+             COALESCE(SUM(e."durationSeconds"), 0)::float8 AS seconds,
+             COALESCE(SUM(CASE WHEN e."billable" THEN e."durationSeconds" ELSE 0 END), 0)::float8 AS "billableSeconds",
              COUNT(*)::int AS count
       FROM bc_time_entries e
-      WHERE e."endTime" IS NOT NULL AND e."startTime" >= ${f.from} AND e."startTime" <= ${f.to}
-        ${f.userIds ? Prisma.sql`AND e."userId" IN (${Prisma.join(f.userIds)})` : Prisma.empty}
-        ${f.projectId ? (f.projectId === "none" ? Prisma.sql`AND e."projectId" IS NULL` : Prisma.sql`AND e."projectId" = ${f.projectId}`) : Prisma.empty}
+      WHERE ${entrySql({ ...f, finishedOnly: true })}
       GROUP BY 1, 2`);
+    const cells = rows.map((r) => ({ ...r, seconds: Number(r.seconds), billableSeconds: Number(r.billableSeconds), count: Number(r.count) }));
     const ids = [...new Set(cells.map((c) => c.projectId).filter((id): id is string => !!id))];
     const projects = ids.length ? await prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, color: true, billable: true, isArchived: true } }) : [];
     return { cells, projects };

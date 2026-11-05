@@ -9,8 +9,12 @@ import { setTimeFormat, setWeekStart } from "./time";
 export type Prefs = {
   /** Which mode the time tracker opens in. */
   defaultMode: "timer" | "manual";
-  /** How many days the time tracker lists by default. */
-  trackerWindow: "7" | "14" | "30";
+  /** How far back the time tracker lists by default. */
+  trackerWindow: TrackerWindow;
+  /** Tracker list: load more as you scroll, or numbered pages. */
+  trackerLoading: "scroll" | "pages";
+  /** Rows per page when trackerLoading is "pages". */
+  trackerPageSize: TrackerPageSize;
   /** Clock format for times in lists. */
   timeFormat: "12h" | "24h";
   /** Which day the week starts on in charts and "this week" totals. */
@@ -21,9 +25,23 @@ export type Prefs = {
   longTimerHours: number;
 };
 
+export type TrackerWindow = "7" | "14" | "30" | "90" | "year" | "all";
+export const TRACKER_WINDOWS: { value: TrackerWindow; label: string }[] = [
+  { value: "7", label: "Last 7 days" },
+  { value: "14", label: "Last 14 days" },
+  { value: "30", label: "Last 30 days" },
+  { value: "90", label: "Last 90 days" },
+  { value: "year", label: "This year" },
+  { value: "all", label: "All time" },
+];
+export type TrackerPageSize = "10" | "25" | "50" | "100";
+export const TRACKER_PAGE_SIZES: TrackerPageSize[] = ["10", "25", "50", "100"];
+
 export const DEFAULT_PREFS: Prefs = {
   defaultMode: "timer",
   trackerWindow: "7",
+  trackerLoading: "scroll",
+  trackerPageSize: "25",
   timeFormat: "24h",
   weekStart: "monday",
   tickingTitle: true,

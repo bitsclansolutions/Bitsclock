@@ -41,8 +41,10 @@ export const PERMISSION_GROUPS = [
     label: "Team & access",
     permissions: [
       { key: "users.view", label: "View members", description: "See the member list." },
-      { key: "users.manage", label: "Manage members", description: "Add members, assign roles, deactivate and reset passwords." },
-      { key: "roles.manage", label: "Manage roles", description: "Create roles and choose their permissions." },
+      { key: "users.request", label: "Request new members", description: "Ask the Administrator to add a member; the Administrator approves or rejects." },
+      { key: "users.deactivate", label: "Deactivate members", description: "Block sign-in for members who leave (never the Administrator or themselves)." },
+      { key: "users.manage", label: "Manage members", description: "Add members, assign roles, reset passwords. Administrator only." },
+      { key: "roles.manage", label: "Manage roles", description: "Create roles and choose their permissions. Administrator only." },
     ],
   },
 ] as const;
@@ -58,6 +60,20 @@ export const EMPLOYEE_ROLE_NAME = "Employee";
 
 export const DEFAULT_EMPLOYEE_PERMISSIONS: Permission[] = ["time.track", "projects.view", "reports.view_own", "reports.export"];
 
+/**
+ * Held only by the Administrator role and never grantable to another role (D-001):
+ * whoever can manage members or roles can make themselves Administrator.
+ */
+export const ADMIN_ONLY_PERMISSIONS = ["users.manage", "roles.manage"] as const satisfies readonly Permission[];
+const ADMIN_ONLY_SET = new Set<string>(ADMIN_ONLY_PERMISSIONS);
+
+/** Permissions a custom or Employee role may hold. */
+export const GRANTABLE_PERMISSIONS: Permission[] = ALL_PERMISSIONS.filter((p) => !ADMIN_ONLY_SET.has(p));
+
 export function isValidPermission(key: string): key is Permission {
   return PERMISSION_SET.has(key);
+}
+
+export function isGrantablePermission(key: string): key is Permission {
+  return PERMISSION_SET.has(key) && !ADMIN_ONLY_SET.has(key);
 }

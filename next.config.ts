@@ -32,6 +32,9 @@ const nextConfig: NextConfig = {
   // webpack (`npm run dev`, used locally because the exFAT drive can't create
   // the junctions Turbopack needs) and Turbopack (`next build` on Vercel).
   poweredByHeader: false,
+  // The Playwright smoke suite runs its own dev server next to `npm run dev`; a separate
+  // build directory keeps the two from fighting over .next.
+  ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
   async headers() {
     return [
       { source: "/(.*)", headers: securityHeaders },

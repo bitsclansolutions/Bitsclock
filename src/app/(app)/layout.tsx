@@ -8,7 +8,8 @@ import { AppShell } from "@/components/AppShell";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await getSessionUser();
-  if (!user) redirect("/login");
+  // Through a route that clears the stale cookies first; a bare redirect to /login would loop (R-046).
+  if (!user) redirect("/api/auth/signed-out");
   return (
     <UserProvider user={user}>
       <ToastProvider>

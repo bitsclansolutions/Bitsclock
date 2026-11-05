@@ -1,6 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useFocusTrap } from "@/lib/focus";
+
+/** A result id made safe for use in an element id. */
+const i2id = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, "_");
 import { useRouter } from "next/navigation";
 import { BarChart3, CalendarDays, Clock3, FolderKanban, LayoutGrid, Search, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { useUser } from "@/context/UserContext";
@@ -45,11 +49,15 @@ export function GlobalSearch() {
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+  // Tab stays in the overlay; focus returns to where it was when it closes (R-034).
+  useFocusTrap(dialogRef, open);
 
   const entriesUrl = useMemo(() => {
     const today = new Date();
     const range = rangeToInstants(dayKey(addDays(today, -29)), dayKey(today));
-    return `/api/time-entries${qs({ ...range, tz: tzName(), userId: can("time.view_all") ? "all" : "me" })}`;
+    return `/api/time-entries${qs({ ...range, tz: tzName(), userId: can("time.view_all") ? "all" : "me", limit: 200 })}`;
   }, [can]);
   const projectsQ = useApi<{ projects: ProjectDTO[] }>("/api/projects?includeArchived=1", { enabled: open && can("projects.view"), ttlMs: 60_000 });
   const membersQ = useApi<{ members: MemberDTO[] }>("/api/users", { enabled: open && (can("users.view") || can("time.view_all") || can("reports.view_all")), ttlMs: 60_000 });
@@ -151,15 +159,28 @@ export function GlobalSearch() {
       {/* Expanded overlay */}
       {open && (
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink-900/35 px-4 pt-[10vh] backdrop-blur-sm" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-          <div className="fade-up w-full max-w-2xl" role="dialog" aria-modal="true" aria-label="Search">
+          <div ref={dialogRef} className="fade-up w-full max-w-2xl" role="dialog" aria-modal="true" aria-label="Search">
             <div className="search h-14 w-full border-none bg-white pl-5 shadow-pop">
-              <Search className="h-5 w-5 shrink-0 text-ink-400" />
-              <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey} placeholder="Search pages, projects, members and entries…" aria-label="Search" className="!text-base" />
+              <Search className="h-5 w-5 shrink-0 text-ink-500" aria-hidden="true" />
+              <input
+                ref={inputRef}
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={onKey}
+                placeholder="Search pages, projects, members and entries…"
+                aria-label="Search"
+                role="combobox"
+                aria-expanded={results.length > 0}
+                aria-controls={listId}
+                aria-activedescendant={results[active] ? `${listId}-${i2id(results[active]!.id)}` : undefined}
+                aria-autocomplete="list"
+                className="!text-base"
+              />
               <button type="button" onClick={close} aria-label="Close search" className="go !h-10 !w-10">
                 <X className="h-[18px] w-[18px]" />
               </button>
             </div>
-            <div className="card mt-3 max-h-[60vh] overflow-y-auto p-2">
+            <div id={listId} role="listbox" aria-label="Search results" className="card mt-3 max-h-[60vh] overflow-y-auto p-2">
               {results.length === 0 ? (
                 <p className="px-3 py-8 text-center text-sm text-ink-500">{loading ? "Searching…" : `No matches for “${q}”`}</p>
               ) : (
@@ -169,10 +190,14 @@ export function GlobalSearch() {
                     <div key={r.id}>
                       {showGroup && <p className="px-3 pb-1 pt-2 text-[11px] font-bold uppercase tracking-wider text-ink-400">{r.group}</p>}
                       <button
+                        id={`${listId}-${i2id(r.id)}`}
                         type="button"
+                        role="option"
+                        aria-selected={i === active}
+                        tabIndex={-1}
                         onMouseEnter={() => setActive(i)}
                         onClick={() => go(r)}
-                        className={cx("flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors", i === active ? "bg-ink-900 text-white" : "text-ink-900 hover:bg-ink-50")}
+                        className={cx("flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors", i === active ? "bg-brand-600 text-white" : "text-ink-900 hover:bg-ink-50")}
                       >
                         <span className={cx("flex h-7 w-7 shrink-0 items-center justify-center rounded-full", i === active ? "bg-white/15" : "bg-ink-50")}>{r.icon}</span>
                         <span className="min-w-0 flex-1">

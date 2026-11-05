@@ -1,15 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { CalendarDays, Clock3, DollarSign, Pencil, Play, Plus, Search, Square, Trash2 } from "lucide-react";
-import { readPrefs } from "@/lib/prefs";
+import { useRouter, useSearchParams } from "next/navigation";
+import { CalendarDays, Clock3, DollarSign, Play, Plus, Search, Square, Trash2 } from "lucide-react";
+import { readPrefs, writePrefs, TRACKER_PAGE_SIZES, TRACKER_WINDOWS, type TrackerPageSize, type TrackerWindow } from "@/lib/prefs";
+import { useLatest } from "@/lib/focus";
+import { LIMITS } from "@/lib/sanitize";
 import { useUser } from "@/context/UserContext";
 import { useTimer } from "@/context/TimerContext";
 import { useToast } from "@/context/ToastContext";
 import { useConfirm } from "@/context/ConfirmContext";
 import { api, errMsg, qs, rangeToInstants, tzName } from "@/lib/client";
 import { invalidate, useApi } from "@/lib/useApi";
+import { clearDraft, loadDraft, useDraft } from "@/lib/drafts";
 import type { EntryDTO } from "@/lib/entries";
 import type { ProjectDTO } from "@/app/api/projects/route";
 import type { MemberDTO } from "@/app/api/users/route";
@@ -18,14 +21,59 @@ import { EmptyState, Kpi, MiniBars, Seg, Skeleton, cx } from "@/components/ui";
 import { ProjectSelect } from "@/components/ProjectSelect";
 import { RowMenu } from "@/components/RowMenu";
 import { Select } from "@/components/Select";
-import { EntryModal } from "./EntryModal";
+import { InlineEntryEditor } from "./InlineEntryEditor";
 import { DescriptionInput } from "./DescriptionInput";
 
 type Mode = "timer" | "manual";
-type Window = "7" | "14" | "30";
 type Billing = "all" | "billable" | "non_billable";
+type EntriesPage = { entries: EntryDTO[]; nextCursor: string | null; total?: number; page?: number; pageCount?: number };
+
+/** Entries loaded per batch in scroll mode. */
+const SCROLL_BATCH = 50;
+
+/**
+ * The list's date range for a window choice. "All time" starts on 2 Jan 2000: the API only
+ * accepts dates after 1 Jan 2000 UTC (so no entry is older), and local midnight on 1 Jan would
+ * fall before that in time zones east of UTC.
+ */
+function windowRange(win: TrackerWindow) {
+  const today = new Date();
+  const from = win === "all" ? "2000-01-02" : win === "year" ? `${today.getFullYear()}-01-01` : dayKey(addDays(today, -(Number(win) - 1)));
+  return rangeToInstants(from, dayKey(today));
+}
+
+/** Page buttons to show: first, last, and two either side of the current page, with gaps as null. */
+function pageList(current: number, count: number): (number | null)[] {
+  const keep = new Set([1, count, current - 1, current, current + 1].filter((n) => n >= 1 && n <= count));
+  const sorted = [...keep].sort((a, b) => a - b);
+  const out: (number | null)[] = [];
+  sorted.forEach((n, i) => {
+    if (i > 0 && n - sorted[i - 1]! > 1) out.push(null);
+    out.push(n);
+  });
+  return out;
+}
 
 const ENTRY_PREFIXES = ["/api/time-entries", "/api/timesheet", "/api/dashboard", "/api/projects", "/api/users", "/api/reports"];
+
+/** Billable / Non-billable as a segmented toggle, like Timer / Manual. Read-only unless `canChange`. */
+function BillingToggle({ billable, canChange, title, onChange }: { billable: boolean; canChange: boolean; title: string; onChange: (billable: boolean) => void }) {
+  return (
+    <div className="shrink-0">
+      <Seg
+        label="Billing"
+        title={title}
+        disabled={!canChange}
+        value={billable ? "billable" : "non_billable"}
+        onChange={(v) => onChange(v === "billable")}
+        options={[
+          { value: "billable", label: <><DollarSign className="h-3.5 w-3.5" /> Billable</> },
+          { value: "non_billable", label: "Non-billable" },
+        ]}
+      />
+    </div>
+  );
+}
 
 function dayLabel(key: string) {
   const d = new Date(key + "T00:00:00");
@@ -55,46 +103,140 @@ export function TrackerView() {
   const [mStart, setMStart] = useState(() => fmtTimeText(new Date(Date.now() - 3600_000)));
   const [mEnd, setMEnd] = useState(() => fmtTimeText(new Date()));
   const [busy, setBusy] = useState(false);
+  // What's typed in the entry bar survives an expired session (R-038).
+  useDraft("tracker:bar", { description, projectId }, !timer.active && (description !== "" || projectId !== ""));
+  useEffect(() => {
+    const d = loadDraft<{ description: string; projectId: string }>("tracker:bar");
+    if (d) {
+      setDescription(d.description);
+      setProjectId(d.projectId);
+    }
+  }, []);
 
   // Filters
-  const [win, setWin] = useState<Window>(() => readPrefs().trackerWindow);
+  const [win, setWin] = useState<TrackerWindow>(() => readPrefs().trackerWindow);
   const [billing, setBilling] = useState<Billing>("all");
   const [memberId, setMemberId] = useState("me");
   const [filterProject, setFilterProject] = useState("");
   const [q, setQ] = useState(() => searchParams.get("q") ?? "");
-  const [modal, setModal] = useState<{ entry: EntryDTO | null } | null>(null);
   const viewingOthers = memberId !== "me" && memberId !== user.id;
+
+  // How the list loads: endless scroll or numbered pages (remembered per browser).
+  const [loadMode, setLoadModeState] = useState<"scroll" | "pages">(() => readPrefs().trackerLoading);
+  const [pageSize, setPageSizeState] = useState<TrackerPageSize>(() => readPrefs().trackerPageSize);
+  const setLoadMode = (v: "scroll" | "pages") => {
+    setLoadModeState(v);
+    writePrefs({ trackerLoading: v });
+  };
+  const setPageSize = (v: TrackerPageSize) => {
+    setPageSizeState(v);
+    writePrefs({ trackerPageSize: v });
+  };
 
   // Data (cached, stale-while-revalidate)
   const projectsQ = useApi<{ projects: ProjectDTO[] }>("/api/projects", { ttlMs: 60_000 });
   const membersQ = useApi<{ members: MemberDTO[] }>(canViewAll ? "/api/users" : null, { ttlMs: 60_000 });
-  const entriesUrl = useMemo(() => {
-    const today = new Date();
-    const range = rangeToInstants(dayKey(addDays(today, -(Number(win) - 1))), dayKey(today));
-    return `/api/time-entries${qs({ ...range, tz: tzName(), userId: memberId, projectId: filterProject, q: q.trim() })}`;
-  }, [win, memberId, filterProject, q]);
-  const entriesQ = useApi<{ entries: EntryDTO[] }>(entriesUrl);
-  const entries = entriesQ.data?.entries ?? null;
+  // Every filter is applied on the server, so page counts and totals are right.
+  const baseUrl = useMemo(
+    () =>
+      `/api/time-entries${qs({ ...windowRange(win), tz: tzName(), userId: memberId, projectId: filterProject, q: q.trim(), billable: billing === "all" ? undefined : billing, finished: "1" })}`,
+    [win, memberId, filterProject, q, billing],
+  );
+  // Page number belongs to one filter set + page size; any change starts again at page 1.
+  const pageKey = `${baseUrl}|${pageSize}`;
+  const [pageState, setPageState] = useState({ key: pageKey, n: 1 });
+  const pageNo = pageState.key === pageKey ? pageState.n : 1;
+  const listTop = useRef<HTMLDivElement>(null);
+  const goToPage = (n: number) => {
+    setPageState({ key: pageKey, n });
+    listTop.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  const entriesUrl = loadMode === "pages" ? `${baseUrl}&page=${pageNo}&limit=${pageSize}` : `${baseUrl}&limit=${SCROLL_BATCH}`;
+  const entriesQ = useApi<EntriesPage>(entriesUrl);
+  // Scroll mode (R-025): the first batch comes from the cache, more is appended as you near the end.
+  const [extra, setExtra] = useState<EntryDTO[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadingRef = useRef(false);
+  useEffect(() => {
+    setExtra([]);
+    setNextCursor(entriesQ.data?.nextCursor ?? null);
+  }, [entriesQ.data]);
+  const entries = useMemo(() => {
+    if (!entriesQ.data) return null;
+    return loadMode === "pages" ? entriesQ.data.entries : [...entriesQ.data.entries, ...extra];
+  }, [entriesQ.data, extra, loadMode]);
+  const loadMore = async () => {
+    if (!nextCursor || loadingRef.current) return;
+    loadingRef.current = true;
+    setLoadingMore(true);
+    try {
+      const page = await api<EntriesPage>(`${entriesUrl}&cursor=${encodeURIComponent(nextCursor)}`);
+      setExtra((prev) => [...prev, ...page.entries]);
+      setNextCursor(page.nextCursor);
+    } catch (e) {
+      toast.error("Couldn't load more entries", errMsg(e));
+    } finally {
+      loadingRef.current = false;
+      setLoadingMore(false);
+    }
+  };
+  // Load the next batch when the end of the list scrolls near the screen.
+  const sentinel = useRef<HTMLDivElement>(null);
+  const loadMoreRef = useLatest(loadMore);
+  useEffect(() => {
+    if (loadMode !== "scroll" || !nextCursor) return;
+    const el = sentinel.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((seen) => seen.some((s) => s.isIntersecting) && void loadMoreRef.current(), { rootMargin: "0px 0px 400px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMode, nextCursor, loadMoreRef]);
+
+  // Today / this week figures come from their own query, so paging and filters never skew them.
+  const statsUrl = useMemo(() => {
+    const now = new Date();
+    return `/api/time-entries${qs({ ...rangeToInstants(dayKey(startOfWeek(now)), dayKey(now)), tz: tzName(), userId: "me", finished: "1", limit: 500 })}`;
+  }, []);
+  const statsQ = useApi<EntriesPage>(statsUrl);
+
+  // What's typed in the running timer's description (for its tooltip and counter).
+  const [runningText, setRunningText] = useState("");
+  useEffect(() => setRunningText(timer.active?.description ?? ""), [timer.active?.id, timer.active?.description]);
+
+  // The entry being edited in place (its row turns into fields; no dialog).
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // "Stop and edit" from the long-timer alert lands here with ?edit=<entry id>.
+  const router = useRouter();
+  const editId = searchParams.get("edit");
+  useEffect(() => {
+    if (!editId || !entries) return;
+    const target = entries.find((e) => e.id === editId);
+    if (target) setEditingId(target.id);
+    router.replace("/tracker", { scroll: false });
+  }, [editId, entries, router]);
   const projects = useMemo(() => projectsQ.data?.projects ?? [], [projectsQ.data]);
   const logProjects = useMemo(() => projects.filter((p) => p.canLog), [projects]);
   useEffect(() => {
     if (billableTouched) return;
     setBillable(logProjects.find((p) => p.id === projectId)?.billable ?? false);
   }, [projectId, logProjects, billableTouched]);
+  // D-005: billable follows the project; only members who can edit everyone's time may override it.
+  // Same segmented toggle as Timer / Manual; read-only for everyone else.
   const billableChip = (
-    <button
-      type="button"
-      className={cx("chip shrink-0", billable && "on")}
-      aria-pressed={billable}
-      title={billableTouched ? "Billing for this entry" : "Follows the project; click to override"}
-      onClick={() => {
+    <BillingToggle
+      billable={billable}
+      canChange={canManageAll}
+      title={!canManageAll ? "Set by the project" : billableTouched ? "Billing for this entry" : "Follows the project; choose to override"}
+      onChange={(b) => {
         setBillableTouched(true);
-        setBillable((b) => !b);
+        setBillable(b);
       }}
-    >
-      <DollarSign className="h-3.5 w-3.5" /> {billable ? "Billable" : "Non-billable"}
-    </button>
+    />
   );
+  /** Only send billable when it's an override someone is allowed to make; otherwise the project decides. */
+  const billableField = canManageAll && billableTouched ? { billable } : {};
   const members = useMemo(() => (membersQ.data?.members ?? []).filter((m) => m.isActive), [membersQ.data]);
 
   // When the running timer changes elsewhere (header stop button), refresh lists.
@@ -107,8 +249,8 @@ export function TrackerView() {
   }, [timer.active]);
 
   // The list holds completed entries only; a running timer lives in the bar above and the header pill.
-  const completed = useMemo(() => (entries ?? []).filter((e) => !e.running), [entries]);
-  const visible = useMemo(() => completed.filter((e) => (billing === "all" ? true : billing === "billable" ? e.billable : !e.billable)), [completed, billing]);
+  // (The server already applies the billing filter and leaves out a running timer.)
+  const visible = useMemo(() => (entries ?? []).filter((e) => !e.running), [entries]);
   const groups = useMemo(() => {
     const m = new Map<string, EntryDTO[]>();
     for (const e of visible) {
@@ -129,8 +271,8 @@ export function TrackerView() {
       weekS = 0,
       billS = 0,
       weekN = 0;
-    for (const e of completed) {
-      if (e.userId !== user.id) continue;
+    for (const e of statsQ.data?.entries ?? []) {
+      if (e.userId !== user.id || e.running) continue;
       const k = dayKey(e.startTime);
       if (k === today) todayS += e.durationSeconds;
       if (k >= weekKey) {
@@ -143,7 +285,7 @@ export function TrackerView() {
     }
     if (timer.active && dayKey(timer.active.startTime) === today) todayS += timer.elapsed;
     return { todayS, weekS, billS, weekN, perDay };
-  }, [completed, user.id, timer.active, timer.elapsed]);
+  }, [statsQ.data, user.id, timer.active, timer.elapsed]);
 
   const manualTimes = useMemo(() => {
     const s = parseTimeText(mStart);
@@ -160,8 +302,9 @@ export function TrackerView() {
   const start = async () => {
     setBusy(true);
     try {
-      await timer.start({ description: description.trim(), projectId: projectId || null, billable });
+      await timer.start({ description: description.trim(), projectId: projectId || null, ...billableField });
       setDescription("");
+      clearDraft("tracker:bar");
       afterMutation();
     } catch (e) {
       toast.error("Couldn't start the timer", errMsg(e));
@@ -192,9 +335,10 @@ export function TrackerView() {
     try {
       const { entry } = await api<{ entry: EntryDTO }>("/api/time-entries", {
         method: "POST",
-        json: { description: description.trim(), projectId: projectId || null, billable, startTime: manualTimes.a.toISOString(), endTime: manualTimes.b.toISOString() },
+        json: { description: description.trim(), projectId: projectId || null, ...billableField, startTime: manualTimes.a.toISOString(), endTime: manualTimes.b.toISOString() },
       });
       setDescription("");
+      clearDraft("tracker:bar");
       toast.success("Entry added", `${fmtHours(entry.durationSeconds)} on ${entry.project?.name ?? "no project"}`);
       afterMutation();
       // Suggest the next slot: same duration, starting where this entry ended. Crossing
@@ -263,7 +407,7 @@ export function TrackerView() {
   const memberOptions = useMemo(
     () => [
       { value: "me", label: "My time", avatar: user.name },
-      { value: "all", label: "Everyone", color: "#1e2a24" as string | null },
+      { value: "all", label: "Everyone", color: "#1d2129" as string | null },
       ...members.filter((m) => m.id !== user.id).map((m) => ({ value: m.id, label: m.name, hint: m.jobTitle || undefined, avatar: m.name })),
     ],
     [members, user.name, user.id],
@@ -281,7 +425,7 @@ export function TrackerView() {
           </div>
         ) : active ? (
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-            <div className="flex min-w-0 flex-1 items-center gap-3 rounded-[0.875rem] border border-brand-200 bg-brand-50 px-3.5">
+            <div className="flex min-w-0 flex-1 items-center gap-3 rounded-[0.875rem] border border-brand-200 bg-brand-50 px-3.5 focus-within:border-brand-600 focus-within:ring-1 focus-within:ring-inset focus-within:ring-brand-600">
               <span className="live-dot" />
               <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-brand-800">Running</span>
               <input
@@ -289,15 +433,28 @@ export function TrackerView() {
                 aria-label="What are you working on?"
                 className="h-[42px] min-w-0 flex-1 bg-transparent text-sm font-semibold text-ink-900 outline-none"
                 defaultValue={active.description}
+                maxLength={LIMITS.entryDescription}
+                title={runningText.length > 40 ? runningText : undefined}
                 placeholder="What are you working on?"
+                onInput={(e) => setRunningText(e.currentTarget.value)}
+                onFocus={(e) => setRunningText(e.currentTarget.value)}
                 onBlur={(e) => e.target.value.trim() !== active.description && updateActive({ description: e.target.value.trim() })}
                 onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
               />
+              {runningText.length >= 400 && (
+                <span aria-live="polite" className={cx("tabular shrink-0 text-[11px] font-bold", runningText.length >= LIMITS.entryDescription ? "text-[#b5322b]" : "text-ink-400")}>
+                  {runningText.length}/{LIMITS.entryDescription}
+                  <span className="sr-only"> characters used</span>
+                </span>
+              )}
             </div>
             <ProjectSelect className="lg:w-60" value={active.projectId ?? ""} onChange={(v) => updateActive({ projectId: v || null })} projects={active.project && !logProjects.some((p) => p.id === active.project!.id) ? [...logProjects, active.project] : logProjects} />
-            <button type="button" className={cx("chip shrink-0", active.billable && "on")} aria-pressed={active.billable} title="Billing for this entry" onClick={() => updateActive({ billable: !active.billable })}>
-              <DollarSign className="h-3.5 w-3.5" /> {active.billable ? "Billable" : "Non-billable"}
-            </button>
+            <BillingToggle
+              billable={active.billable}
+              canChange={canManageAll}
+              title={canManageAll ? "Billing for this entry" : "Set by the project"}
+              onChange={(b) => b !== active.billable && updateActive({ billable: b })}
+            />
             <span className="tabular min-w-[7.5rem] px-2 text-center text-[26px] font-extrabold tracking-tight text-ink-900">{fmtClock(timer.elapsed)}</span>
             <button type="button" onClick={stop} disabled={busy} className="btn btn-danger-solid min-w-[6.5rem]">
               <Square className="h-3.5 w-3.5 fill-current" /> Stop
@@ -368,18 +525,16 @@ export function TrackerView() {
             options={[{ value: "", label: "All projects" }, { value: "none", label: "No project", color: null }, ...projects.map((p) => ({ value: p.id, label: p.name, color: p.color, hint: p.isArchived ? "Archived" : undefined }))]}
             searchPlaceholder="Search projects…"
           />
-          <Select label="Window" value={win} onChange={(v) => setWin(v as Window)} options={[{ value: "7", label: "Last 7 days" }, { value: "14", label: "Last 14 days" }, { value: "30", label: "Last 30 days" }]} className="w-36" />
-          {(canManageAll || !viewingOthers) && (
-            <button type="button" className="btn btn-secondary" onClick={() => setModal({ entry: null })}>
-              <Plus className="h-4 w-4" /> Add entry
-            </button>
-          )}
+          <Select label="Window" value={win} onChange={(v) => setWin(v as TrackerWindow)} options={TRACKER_WINDOWS} className="w-40" />
+          <Seg label="How entries load" value={loadMode} onChange={setLoadMode} options={[{ value: "scroll", label: "Scroll" }, { value: "pages", label: "Pages" }]} />
         </div>
       </div>
 
       {entriesQ.error && <p className="rounded-2xl bg-[#fbe5e5] px-4 py-3 text-sm text-[#b5322b]">{entriesQ.error}</p>}
 
       {/* Completed entries */}
+      <div ref={listTop} className="scroll-mt-4" aria-hidden />
+
       {entries === null ? (
         <div className="space-y-3">
           <Skeleton className="h-24" />
@@ -387,7 +542,7 @@ export function TrackerView() {
         </div>
       ) : groups.length === 0 ? (
         <div className="card">
-          <EmptyState icon={<Clock3 className="h-6 w-6" />} title={active ? "Your first entry appears here once the timer stops" : "No time tracked yet"} body={q || filterProject || billing !== "all" ? "Nothing matches these filters." : `Start a timer or add an entry. The last ${win} days show here.`} />
+          <EmptyState icon={<Clock3 className="h-6 w-6" />} title={active ? "Your first entry appears here once the timer stops" : "No time tracked yet"} body={q || filterProject || billing !== "all" ? "Nothing matches these filters." : `Start a timer or add an entry. Showing: ${TRACKER_WINDOWS.find((w) => w.value === win)?.label.toLowerCase() ?? "recent entries"}.`} />
         </div>
       ) : (
         <div className={cx("space-y-4 transition-opacity", entriesQ.stale && "opacity-70")}>
@@ -403,26 +558,71 @@ export function TrackerView() {
                 {g.es.map((e) => {
                   const crosses = e.endTime && dayKey(e.endTime) !== dayKey(e.startTime);
                   const mine = e.userId === user.id;
-                  return (
-                    <li key={e.id} className="flex flex-col gap-2 rounded-2xl px-3 py-2.5 transition-colors hover:bg-ink-50 sm:flex-row sm:items-center sm:gap-4">
-                      <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-extrabold text-white sm:flex" style={{ background: e.project?.color ?? "#c3cac6" }} aria-hidden="true">
-                        {(e.project?.name ?? "—").slice(0, 1).toUpperCase()}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className={cx("truncate text-sm font-bold", e.description ? "text-ink-900" : "italic text-ink-400")}>{e.description || "No description"}</p>
-                        <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
-                          <span>{e.project?.name ?? "No project"}</span>
-                          {(memberId === "all" || viewingOthers) && <span>· {e.user.name}</span>}
-                        </p>
-                      </div>
-                      <div className="flex items-center justify-between gap-3 sm:justify-end sm:gap-5">
-                        <span className="tabular text-xs text-ink-500">
-                          {fmtTime(e.startTime)} – {fmtTime(e.endTime!)}
-                          {crosses && <sup className="ml-0.5 text-[10px] text-ink-400">+1</sup>}
+                  const editable = canEdit(e);
+                  if (editable && editingId === e.id) {
+                    return (
+                      <li key={e.id} className="py-1">
+                        <InlineEntryEditor
+                          entry={e}
+                          projects={logProjects}
+                          onCancel={() => setEditingId(null)}
+                          onSaved={() => {
+                            setEditingId(null);
+                            afterMutation();
+                            toast.success("Entry updated");
+                          }}
+                        />
+                      </li>
+                    );
+                  }
+                  const text = (
+                    <>
+                      {e.autoStopped && (
+                        <span className="mr-1.5 rounded-full bg-amber-100 px-2 py-0.5 align-middle text-[11px] font-semibold not-italic text-amber-900" title="This timer ran past 24 hours and was stopped automatically. Open it to set the real end time.">
+                          Auto-stopped, please check
                         </span>
+                      )}
+                      {e.description || "No description"}
+                    </>
+                  );
+                  // Up to two lines, then "…"; the full text is in the tooltip.
+                  const textClass = cx("line-clamp-2 w-full break-words text-left text-sm font-bold", e.description ? "text-ink-900" : "italic text-ink-400");
+                  const fullText = e.description.length > 60 ? e.description : undefined;
+                  return (
+                    // Click anywhere on an editable row to edit it: the description is a button whose
+                    // ::after covers the row (stretched button); the play button and menu sit above it.
+                    // Three columns from sm up: details | start–end (centred: the side columns are equal) | duration, billing, actions.
+                    <li key={e.id} className={cx("relative flex flex-col gap-2 rounded-2xl px-3 py-2.5 transition-colors sm:grid sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-6", editable && "cursor-pointer hover:bg-ink-50 has-[button[data-edit]:focus-visible]:ring-2 has-[button[data-edit]:focus-visible]:ring-inset has-[button[data-edit]:focus-visible]:ring-brand-600")}>
+                      <div className="flex min-w-0 items-center gap-4">
+                        <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-extrabold text-white sm:flex" style={{ background: e.project?.color ?? "#ccd0d6" }} aria-hidden="true">
+                          {(e.project?.name ?? "—").slice(0, 1).toUpperCase()}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          {editable ? (
+                            <button type="button" data-edit onClick={() => setEditingId(e.id)} title={fullText ? `${fullText}\n\nClick to edit` : "Click to edit"} className={cx(textClass, "cursor-pointer focus:outline-none after:absolute after:inset-0 after:rounded-2xl after:content-['']")}>
+                              {text}
+                            </button>
+                          ) : (
+                            <p className={textClass} title={fullText}>
+                              {text}
+                            </p>
+                          )}
+                          <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
+                            <span>{e.project?.name ?? "No project"}</span>
+                            {(memberId === "all" || viewingOthers) && <span>· {e.user.name}</span>}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="tabular whitespace-nowrap text-sm font-semibold text-ink-700 sm:text-center">
+                        {fmtTime(e.startTime)} – {fmtTime(e.endTime!)}
+                        {crosses && <sup className="ml-0.5 text-[10px] text-ink-400">+1</sup>}
+                      </span>
+                      <div className="flex items-center justify-between gap-6 sm:justify-end">
                         <span className="tabular w-16 text-right text-sm font-extrabold text-ink-900">{fmtHours(e.durationSeconds)}</span>
-                        <span className={cx("w-24 text-center", e.billable ? "delta-up" : "text-xs text-ink-400")}>{e.billable ? "Billable" : "Non-billable"}</span>
-                        <div className="flex items-center gap-1">
+                        <span className="flex w-24 justify-center">
+                          <span className={e.billable ? "delta-up" : "text-xs text-ink-400"}>{e.billable ? "Billable" : "Non-billable"}</span>
+                        </span>
+                        <div className="relative z-10 flex items-center gap-1">
                           <button
                             type="button"
                             aria-label="Start a new timer from this entry"
@@ -433,15 +633,8 @@ export function TrackerView() {
                           >
                             <Play className="h-3.5 w-3.5 fill-current" />
                           </button>
-                          {canEdit(e) ? (
-                            <RowMenu
-                              label="Entry actions"
-                              items={[
-                                { label: "Edit entry", icon: <Pencil className="h-4 w-4" />, onClick: () => setModal({ entry: e }) },
-                                { divider: true as const },
-                                { label: "Delete entry", icon: <Trash2 className="h-4 w-4" />, onClick: () => remove(e), danger: true },
-                              ]}
-                            />
+                          {editable ? (
+                            <RowMenu label="Entry actions" items={[{ label: "Delete entry", icon: <Trash2 className="h-4 w-4" />, onClick: () => remove(e), danger: true }]} />
                           ) : (
                             <span className="w-8" />
                           )}
@@ -456,17 +649,59 @@ export function TrackerView() {
         </div>
       )}
 
-      <EntryModal
-        open={!!modal}
-        onClose={() => setModal(null)}
-        entry={modal?.entry ?? null}
-        projects={logProjects}
-        forUserId={viewingOthers && memberId !== "all" ? memberId : undefined}
-        onSaved={() => {
-          afterMutation();
-          toast.success(modal?.entry ? "Entry updated" : "Entry added");
-        }}
-      />
+      {loadMode === "scroll" && entries !== null && groups.length > 0 && (
+        // Scroll mode: the next batch loads when this comes near the screen. The button is a
+        // fallback for keyboards and old browsers.
+        <div ref={sentinel} className="flex justify-center py-1" aria-live="polite">
+          {nextCursor ? (
+            <button type="button" className="btn btn-ghost btn-sm" onClick={loadMore} disabled={loadingMore}>
+              {loadingMore ? "Loading more entries…" : "Load more entries"}
+            </button>
+          ) : (
+            <p className="text-xs text-ink-400">That&apos;s everything in this range.</p>
+          )}
+        </div>
+      )}
+
+      {loadMode === "pages" && entriesQ.data?.total !== undefined && entriesQ.data.total > 0 && (
+        <nav aria-label="Entry pages" className="card flex flex-col items-center gap-3 px-4 py-3 sm:flex-row sm:justify-between">
+          <p className="tabular text-sm text-ink-500">
+            Showing <span className="font-bold text-ink-900">{(pageNo - 1) * Number(pageSize) + 1}–{Math.min(pageNo * Number(pageSize), entriesQ.data.total)}</span> of{" "}
+            <span className="font-bold text-ink-900">{entriesQ.data.total}</span> entries
+          </p>
+          <div className="flex items-center gap-1">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => goToPage(pageNo - 1)} disabled={pageNo <= 1} aria-label="Previous page">
+              ‹ Prev
+            </button>
+            {pageList(pageNo, entriesQ.data.pageCount ?? 1).map((n, i) =>
+              n === null ? (
+                <span key={`gap${i}`} className="px-1 text-ink-400" aria-hidden>
+                  …
+                </span>
+              ) : (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => goToPage(n)}
+                  aria-label={`Page ${n}`}
+                  aria-current={n === pageNo ? "page" : undefined}
+                  className={cx("btn btn-sm tabular min-w-[2.125rem] px-2", n === pageNo ? "btn-primary" : "btn-ghost")}
+                >
+                  {n}
+                </button>
+              ),
+            )}
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => goToPage(pageNo + 1)} disabled={pageNo >= (entriesQ.data.pageCount ?? 1)} aria-label="Next page">
+              Next ›
+            </button>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-ink-500">
+            Rows per page
+            <Select label="Rows per page" value={pageSize} onChange={(v) => setPageSize(v as TrackerPageSize)} options={TRACKER_PAGE_SIZES.map((n) => ({ value: n, label: n }))} className="w-20" />
+          </label>
+        </nav>
+      )}
+
     </div>
   );
 }

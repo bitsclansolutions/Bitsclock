@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { handler, json, ApiError } from "@/lib/api";
 import { refreshSession } from "@/lib/auth";
-import { clientIp } from "@/lib/rate-limit";
+import { clientIp, envLimit } from "@/lib/rate-limit";
 import { safeNextPath } from "@/lib/sanitize";
 
 /**
@@ -16,7 +16,8 @@ export const POST = handler(
     if (!userId) throw new ApiError(401, "Your session has expired. Sign in again.");
     return json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
   },
-  { limit: 60, windowMs: 60_000 },
+  // Per IP; a whole office shares one address (R-006). Tune with REFRESH_LIMIT_PER_IP.
+  { limit: () => envLimit("REFRESH_LIMIT_PER_IP", 300), windowMs: 15 * 60_000 },
 );
 
 export const GET = handler(
@@ -31,5 +32,5 @@ export const GET = handler(
     for (const c of probe.cookies.getAll()) res.cookies.set(c.name, c.value, c);
     return res;
   },
-  { limit: 60, windowMs: 60_000 },
+  { limit: () => envLimit("REFRESH_LIMIT_PER_IP", 300), windowMs: 15 * 60_000 },
 );

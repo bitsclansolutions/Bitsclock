@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { ZodError, type ZodType } from "zod";
-import { Prisma } from "@prisma/client";
-import { prisma } from "./prisma";
+import { Prisma, prisma } from "./prisma";
 import { getSessionUser, hasPermission, type SessionUser } from "./auth";
 import type { Permission } from "./permissions";
-import { clientIp, rateLimit } from "./rate-limit";
+import { createHash } from "node:crypto";
+import { clientIp, envLimit, rateLimit } from "./rate-limit";
+import { runAfterResponse } from "./background";
+import { settleInvalidations } from "./server-cache";
 import { isCuid } from "./sanitize";
 
 export class ApiError extends Error {
@@ -68,6 +70,16 @@ export async function requirePermission(permission: Permission): Promise<Session
   return user;
 }
 
+/**
+ * Resolve the caller and require the single Administrator (D-001). Used by every route
+ * that manages members or roles: those powers are never delegated to another role.
+ */
+export async function requireAdmin(): Promise<SessionUser> {
+  const user = await requireUser();
+  if (!user.isAdmin) throw new ApiError(403, "Only the Administrator can do that.");
+  return user;
+}
+
 /** Resolve the caller and require at least one of the permissions. */
 export async function requireAnyPermission(...permissions: Permission[]): Promise<SessionUser> {
   const user = await requireUser();
@@ -83,19 +95,47 @@ export function requireId(value: string | undefined, what = "Record") {
 
 const MAX_BODY_BYTES = 64 * 1024;
 
+/**
+ * Read a request body as text, refusing it as soon as it passes MAX_BODY_BYTES (R-067):
+ * the declared Content-Length is checked first, then bytes are counted while the stream
+ * arrives, so an oversized or lying chunked upload is never buffered whole.
+ */
+export async function readBodyLimited(req: Request, max = MAX_BODY_BYTES): Promise<string> {
+  const declared = Number(req.headers.get("content-length") ?? "0");
+  if (declared > max) throw new ApiError(413, "Request body is too large.");
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > max) {
+        await reader.cancel().catch(() => {});
+        throw new ApiError(413, "Request body is too large.");
+      }
+      chunks.push(value);
+    }
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    throw new ApiError(400, "Request body could not be read.");
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    all.set(c, at);
+    at += c.byteLength;
+  }
+  return new TextDecoder().decode(all);
+}
+
 /** Parse and validate a JSON body. Enforces content type, size and object shape before the schema runs. */
 export async function parseBody<T>(req: Request, schema: ZodType<T>): Promise<T> {
   const type = req.headers.get("content-type") ?? "";
   if (!type.toLowerCase().startsWith("application/json")) throw new ApiError(415, "Request body must be JSON.");
-  const length = Number(req.headers.get("content-length") ?? "0");
-  if (length > MAX_BODY_BYTES) throw new ApiError(413, "Request body is too large.");
-  let text: string;
-  try {
-    text = await req.text();
-  } catch {
-    throw new ApiError(400, "Request body could not be read.");
-  }
-  if (text.length > MAX_BODY_BYTES) throw new ApiError(413, "Request body is too large.");
+  const text = await readBodyLimited(req);
   let raw: unknown;
   try {
     raw = text ? JSON.parse(text) : {};
@@ -144,8 +184,12 @@ function assertSameOrigin(req: Request) {
 }
 
 export type HandlerOptions = {
-  /** Requests allowed per IP per window on this route. Defaults: 600/min for GET, 120/min for mutations. */
-  limit?: number;
+  /**
+   * Requests allowed per IP per window on this route. A function is read per request, so
+   * limits taken from the environment can change without a code change.
+   * Defaults: RATE_LIMIT_READS_PER_MIN (600) for GET, RATE_LIMIT_WRITES_PER_MIN (120) for mutations.
+   */
+  limit?: number | (() => number);
   windowMs?: number;
 };
 
@@ -153,31 +197,57 @@ const CUID_IN_PATH = /\/c[a-z0-9]{20,32}(?=\/|$)/g;
 
 /**
  * Wrap a route handler:
- * - per-IP rate limit (429 with Retry-After),
+ * - per-IP rate limit per route (429 with Retry-After),
+ * - per-user rate limit across all routes for signed-in callers (R-067),
  * - same-origin check for POST/PATCH/PUT/DELETE,
- * - ApiError / ZodError → JSON error responses, anything else → 500 without details.
+ * - idempotent replay for mutations that carry an Idempotency-Key (R-015),
+ * - ApiError / ZodError / database-rule errors → JSON error responses, anything else → 500 without details.
  */
 export function handler<Ctx>(fn: (req: Request, ctx: Ctx) => Promise<Response>, opts: HandlerOptions = {}) {
   return async (req: Request, ctx: Ctx) => {
     try {
       const method = req.method.toUpperCase();
       const mutating = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
-      const route = new URL(req.url).pathname.replace(CUID_IN_PATH, "/:id");
+      const path = new URL(req.url).pathname;
+      const route = path.replace(CUID_IN_PATH, "/:id");
       // Per-IP per-route defaults, tunable per deployment (e.g. behind a corporate NAT many users share one IP).
-      const limit = opts.limit ?? (mutating ? Number(process.env.RATE_LIMIT_WRITES_PER_MIN) || 120 : Number(process.env.RATE_LIMIT_READS_PER_MIN) || 600);
+      const limit = typeof opts.limit === "function" ? opts.limit() : opts.limit ?? (mutating ? envLimit("RATE_LIMIT_WRITES_PER_MIN", 120) : envLimit("RATE_LIMIT_READS_PER_MIN", 600));
       const rl = await rateLimit(`${route}:${method}:${clientIp(req)}`, limit, opts.windowMs ?? 60_000);
       if (!rl.ok) throw new ApiError(429, "Too many requests. Please slow down.", { "Retry-After": String(rl.retryAfterSec) });
       if (mutating) assertSameOrigin(req);
-      const idem = mutating ? req.headers.get("idempotency-key") : null;
-      if (idem && idem.length <= 128 && /^[A-Za-z0-9_-]+$/.test(idem)) {
-        const me = await getSessionUser();
-        if (me) return await withIdempotency(`${me.id}:${idem}`, me.id, () => fn(req, ctx));
+
+      // Per user, whichever IP they come from: one account can't flood the API (R-067).
+      const me = await getSessionUser();
+      if (me) {
+        const perUser = mutating ? envLimit("USER_WRITES_PER_MIN", 60) : envLimit("USER_READS_PER_MIN", 300);
+        const u = await rateLimit(`user:${me.id}:${mutating ? "w" : "r"}`, perUser, 60_000);
+        if (!u.ok) throw new ApiError(429, "Too many requests from your account. Please slow down.", { "Retry-After": String(u.retryAfterSec) });
       }
-      return await fn(req, ctx);
+
+      const idem = mutating ? req.headers.get("idempotency-key") : null;
+      if (me && idem && idem.length <= 128 && /^[A-Za-z0-9_-]+$/.test(idem)) {
+        // The key only replays for the same user, method, path and body (R-015).
+        const body = await readBodyLimited(req);
+        const fingerprint = createHash("sha256").update(`${method}\n${path}\n${body}`).digest("hex").slice(0, 32);
+        const replayable = new Request(req.url, { method: req.method, headers: req.headers, body: body || undefined });
+        const replayed = await withIdempotency(`${me.id}:${idem}:${fingerprint}`, me.id, () => fn(replayable, ctx));
+        await settleInvalidations();
+        return replayed;
+      }
+      const res = await fn(req, ctx);
+      // Cache invalidations reach Redis before the client can ask again (R-016).
+      await settleInvalidations();
+      return res;
     } catch (e) {
       if (e instanceof ApiError) return fail(e.status, e.message, e.headers);
       if (e instanceof ZodError) return fail(400, firstZodMessage(e));
-      console.error(e);
+      // Database rules (D-006) that a race got past the app's own checks: report a conflict, not a crash.
+      if (e instanceof Prisma.PrismaClientKnownRequestError) {
+        if (e.code === "P2002") return fail(409, "That conflicts with something that already exists. Refresh and try again.");
+        if (e.code === "P2003") return fail(409, "That's still in use elsewhere, so it can't be removed.");
+        if (e.code === "P2025") return fail(404, "That no longer exists. Refresh and try again.");
+      }
+      logError(req, e);
       return fail(500, "Something went wrong on the server.");
     }
   };
@@ -189,6 +259,26 @@ export function handler<Ctx>(fn: (req: Request, ctx: Ctx) => Promise<Response>, 
  * click, a flaky proxy) gets the stored response back and never runs the handler again.
  * Keys live 24 hours. Failures (5xx, exceptions) are not stored so a retry can succeed.
  */
+/** A request still marked "in progress" after this long died mid-way; it may be retried (R-015). */
+const STUCK_AFTER_MS = 60_000;
+
+/**
+ * Remove anything secret from a response before it is stored for replay (R-015): a
+ * temporary password is shown exactly once and never written to the database.
+ */
+function storableBody(body: string) {
+  if (!body.includes("tempPassword")) return body;
+  try {
+    const data = JSON.parse(body) as Record<string, unknown>;
+    if (!("tempPassword" in data)) return body;
+    delete data.tempPassword;
+    data.replayNote = "This was already done. The temporary password is shown only once; reset the member's password to get a new one.";
+    return JSON.stringify(data);
+  } catch {
+    return body;
+  }
+}
+
 async function withIdempotency(id: string, userId: string, run: () => Promise<Response>): Promise<Response> {
   const replay = (row: { status: number; body: string }) =>
     new Response(row.body, { status: row.status, headers: { "Content-Type": "application/json; charset=utf-8", "Idempotent-Replayed": "true", "Cache-Control": "no-store" } });
@@ -197,7 +287,9 @@ async function withIdempotency(id: string, userId: string, run: () => Promise<Re
   const seen = await prisma.idempotencyKey.findUnique({ where: { id } });
   if (seen) {
     if (seen.status > 0) return replay(seen);
-    throw inProgress();
+    if (Date.now() - seen.createdAt.getTime() < STUCK_AFTER_MS) throw inProgress();
+    // The first attempt died without finishing; clear it (only if it's still that row) and run again.
+    await prisma.idempotencyKey.deleteMany({ where: { id, status: 0, createdAt: seen.createdAt } });
   }
   try {
     await prisma.idempotencyKey.create({ data: { id, userId, status: 0, body: "" } });
@@ -214,18 +306,39 @@ async function withIdempotency(id: string, userId: string, run: () => Promise<Re
   try {
     res = await run();
   } catch (e) {
-    prisma.idempotencyKey.delete({ where: { id } }).catch(() => {});
+    // Failures aren't stored, so a retry with the same key can succeed.
+    await prisma.idempotencyKey.delete({ where: { id } }).catch(() => {});
     throw e;
   }
   if (res.status >= 500) {
-    prisma.idempotencyKey.delete({ where: { id } }).catch(() => {});
+    await prisma.idempotencyKey.delete({ where: { id } }).catch(() => {});
     return res;
   }
-  const body = await res.clone().text();
+  const body = storableBody(await res.clone().text());
   if (body.length <= 200_000) await prisma.idempotencyKey.update({ where: { id }, data: { status: res.status, body } }).catch((e) => console.error("idempotency: could not store response", e));
-  else prisma.idempotencyKey.delete({ where: { id } }).catch(() => {});
-  if (Math.random() < 0.02) prisma.idempotencyKey.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 24 * 3600_000) } } }).catch(() => {});
+  else await prisma.idempotencyKey.delete({ where: { id } }).catch(() => {});
+  if (Math.random() < 0.02) {
+    runAfterResponse("idempotency prune", () => prisma.idempotencyKey.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 24 * 3600_000) } } }));
+  }
   return res;
 }
 
 export type RouteParams<T extends Record<string, string>> = { params: Promise<T> };
+
+/** Unexpected server error as one structured JSON line (R-022): route, method, error. No bodies or cookies. */
+function logError(req: Request, e: unknown) {
+  const err = e as { name?: string; message?: string; code?: string; stack?: string };
+  console.error(
+    JSON.stringify({
+      level: "error",
+      at: new Date().toISOString(),
+      kind: "api_error",
+      method: req.method,
+      path: new URL(req.url).pathname.replace(CUID_IN_PATH, "/:id"),
+      name: err?.name,
+      code: err?.code,
+      message: err?.message?.slice(0, 500),
+      stack: err?.stack?.split("\n").slice(0, 6).join(" | "),
+    }),
+  );
+}

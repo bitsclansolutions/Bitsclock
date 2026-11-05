@@ -14,7 +14,7 @@ export const GET = handler(async (req) => {
   const me = await requirePermission("time.track");
   const { q } = parseQuery(new URL(req.url), suggestQuerySchema);
   const needle = q.toLowerCase();
-  const recent = await cached(`suggest:${me.id}`, { ttlMs: 60_000, tags: ["entries", "projects"] }, async () => {
+  const recent = await cached(`suggest:${me.id}`, { ttlMs: 60_000, tags: [`entries:${me.id}`, "projects"] }, async () => {
     const rows = await prisma.timeEntry.findMany({
       where: { userId: me.id, description: { not: "" }, startTime: { gte: new Date(Date.now() - 120 * 86400_000) } },
       select: { description: true, projectId: true, startTime: true, project: { select: { id: true, name: true, color: true, isArchived: true } } },

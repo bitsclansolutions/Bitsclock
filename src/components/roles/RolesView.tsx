@@ -8,15 +8,18 @@ import { api, errMsg } from "@/lib/client";
 import { clientCheck, roleCreateSchema } from "@/lib/validation";
 import { invalidate, useApi } from "@/lib/useApi";
 import type { RoleDTO } from "@/lib/roles";
-import { PERMISSION_GROUPS, type Permission } from "@/lib/permissions";
+import { ADMIN_ONLY_PERMISSIONS, PERMISSION_GROUPS, type Permission } from "@/lib/permissions";
 import { PROJECT_COLORS } from "@/lib/time";
-import { Badge, ErrorBanner, Field, Modal, PageHeader, Skeleton, cx } from "@/components/ui";
+import { Badge, ErrorBanner, Field, LoadError, Modal, PageHeader, Skeleton, cx } from "@/components/ui";
 import { RowMenu } from "@/components/RowMenu";
 import { Select } from "@/components/Select";
 
 type Draft = { name: string; description: string; color: string; permissions: Set<string> };
 const emptyDraft = (): Draft => ({ name: "", description: "", color: "#2563eb", permissions: new Set(["time.track", "projects.view", "reports.view_own"]) });
 const PREFIXES = ["/api/roles", "/api/users"];
+const ADMIN_ONLY = new Set<string>(ADMIN_ONLY_PERMISSIONS);
+// Managing members and roles stays with the Administrator (D-001), so those keys are never offered.
+const GROUPS = PERMISSION_GROUPS.map((g) => ({ ...g, permissions: g.permissions.filter((p) => !ADMIN_ONLY.has(p.key)) }));
 
 export function RolesView() {
   const toast = useToast();
@@ -125,22 +128,29 @@ export function RolesView() {
 
       <div className="grid gap-6 lg:grid-cols-[18rem_1fr]">
         <aside className="space-y-2" aria-label="Roles">
-          {roles === null ? [0, 1, 2].map((i) => <Skeleton key={i} className="h-20" />) : roles.map((r) => (
+          {roles === null && rolesQ.error ? (
+            <LoadError what="roles" message={rolesQ.error} onRetry={rolesQ.refresh} />
+          ) : roles === null ? [0, 1, 2].map((i) => <Skeleton key={i} className="h-20" />) : roles.map((r) => (
+            // A real button on the name covers the card (stretched with ::after); the "⋮" menu sits
+            // above it, so no interactive element is nested inside another (R-057).
             <div
               key={r.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => setSelectedId(r.id)}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setSelectedId(r.id))}
-              aria-current={selectedId === r.id ? "true" : undefined}
-              className={cx("card w-full cursor-pointer p-3.5 text-left transition-colors hover:border-ink-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500", selectedId === r.id && "border-brand-600 ring-2 ring-brand-100")}
+              className={cx("card relative w-full p-3.5 text-left transition-colors hover:border-ink-400 has-[button[data-select]:focus-visible]:ring-2 has-[button[data-select]:focus-visible]:ring-inset has-[button[data-select]:focus-visible]:ring-brand-600", selectedId === r.id && "border-brand-600 ring-1 ring-inset ring-brand-600")}
             >
               <div className="flex items-center gap-2.5">
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: r.color }} />
-                <span className="truncate font-semibold text-ink-900">{r.name}</span>
-                {r.isAdmin ? <Lock className="ml-auto h-3.5 w-3.5 shrink-0 text-ink-400" /> : r.isSystem ? <Badge tone="neutral" className="ml-auto">System</Badge> : null}
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: r.color }} aria-hidden="true" />
+                <button
+                  type="button"
+                  data-select
+                  onClick={() => setSelectedId(r.id)}
+                  aria-current={selectedId === r.id ? "true" : undefined}
+                  className="min-w-0 cursor-pointer truncate text-left font-semibold text-ink-900 after:absolute after:inset-0 after:rounded-[inherit] focus:outline-none"
+                >
+                  {r.name}
+                </button>
+                {r.isAdmin ? <Lock className="ml-auto h-3.5 w-3.5 shrink-0 text-ink-400" aria-label="Locked" /> : r.isSystem ? <Badge tone="neutral" className="ml-auto">System</Badge> : null}
                 {!r.isAdmin && (
-                  <span className={cx(r.isSystem ? "" : "ml-auto", "-mr-1.5")} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                  <span className={cx("relative z-10", r.isSystem ? "" : "ml-auto", "-mr-1.5")}>
                     <RowMenu
                       label={`Actions for ${r.name}`}
                       items={[
@@ -156,7 +166,7 @@ export function RolesView() {
             </div>
           ))}
           {selectedId === "new" && (
-            <div className="card border-dashed border-brand-400 p-3.5 ring-2 ring-brand-100">
+            <div className="card border-dashed border-brand-400 p-3.5 ring-1 ring-inset ring-brand-100">
               <p className="font-semibold text-ink-900">{draft.name || "New role"}</p>
               <p className="text-xs text-ink-500">Not saved yet</p>
             </div>
@@ -172,7 +182,7 @@ export function RolesView() {
               {locked && (
                 <div className="flex items-start gap-3 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2.5 text-sm text-ink-700">
                   <Lock className="mt-0.5 h-4 w-4 shrink-0 text-ink-400" />
-                  <span>The Administrator role always has every permission. It can&apos;t be edited or deleted, and the last active administrator can&apos;t be removed.</span>
+                  <span>The Administrator role always has every permission and can&apos;t be edited or deleted. There is exactly one Administrator; only they can manage members and roles.</span>
                 </div>
               )}
               <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
@@ -197,7 +207,7 @@ export function RolesView() {
                   <span className="text-xs text-ink-500">{locked ? "all" : draft.permissions.size} selected</span>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
-                  {PERMISSION_GROUPS.map((g) => {
+                  {GROUPS.map((g) => {
                     const all = g.permissions.every((p) => locked || draft.permissions.has(p.key));
                     return (
                       <fieldset key={g.key} className="rounded-lg border border-ink-200 p-3.5" disabled={locked}>
@@ -218,6 +228,7 @@ export function RolesView() {
                             </li>
                           ))}
                         </ul>
+                        {g.key === "team" && <p className="mt-2 px-1.5 text-xs text-ink-500">Adding members, changing roles and resetting passwords stay with the Administrator.</p>}
                       </fieldset>
                     );
                   })}
@@ -244,7 +255,7 @@ export function RolesView() {
         <p className="text-sm text-ink-700">{deleteTarget?.userCount} member{deleteTarget?.userCount === 1 ? " has" : "s have"} this role. Choose the role they should get instead.</p>
         <div className="mt-3">
           <label className="label" htmlFor="reassign">Move members to</label>
-          <Select id="reassign" value={reassignTo} onChange={setReassignTo} placeholder="Choose a role…" options={(roles ?? []).filter((r) => r.id !== deleteTarget?.id).map((r) => ({ value: r.id, label: r.name, color: r.color }))} searchable={false} />
+          <Select id="reassign" value={reassignTo} onChange={setReassignTo} placeholder="Choose a role…" options={(roles ?? []).filter((r) => r.id !== deleteTarget?.id && !r.isAdmin).map((r) => ({ value: r.id, label: r.name, color: r.color }))} searchable={false} />
         </div>
       </Modal>
     </>

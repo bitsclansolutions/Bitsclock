@@ -28,7 +28,9 @@ export function hoursDecimal(seconds: number) {
   return Math.round((seconds / 3600) * 100) / 100;
 }
 
-// Formatting preferences, set from the browser's saved prefs (see lib/prefs.ts).
+// Formatting preferences, set from the browser's saved prefs (see lib/prefs.ts). These are
+// only the defaults: every function that depends on them also takes the setting as an
+// explicit argument, so tests and other callers never depend on hidden state (R-054).
 let hour12: boolean | undefined;
 let weekStartsSunday = false;
 export function setTimeFormat(f: "12h" | "24h") {
@@ -37,18 +39,19 @@ export function setTimeFormat(f: "12h" | "24h") {
 export function setWeekStart(d: "monday" | "sunday") {
   weekStartsSunday = d === "sunday";
 }
+export type WeekStart = "monday" | "sunday";
+const currentWeekStart = (): WeekStart => (weekStartsSunday ? "sunday" : "monday");
 
 /** Short label for an hour of the day on a calendar axis: "8 AM" / "08:00". */
-export function hourLabel(h: number) {
-  const twelve = hour12 ?? !/^(en-GB|de|fr|es|it|nl|pl|pt|ru|sv|da|fi|nb|tr|cs|hu|ro|uk|ur|hi)/.test(typeof navigator !== "undefined" ? navigator.language : "en-US");
+export function hourLabel(h: number, twelve: boolean = hour12 ?? !/^(en-GB|de|fr|es|it|nl|pl|pt|ru|sv|da|fi|nb|tr|cs|hu|ro|uk|ur|hi)/.test(typeof navigator !== "undefined" ? navigator.language : "en-US")) {
   if (!twelve) return `${String(h).padStart(2, "0")}:00`;
   const hr = h % 12 || 12;
   return `${hr} ${h < 12 ? "AM" : "PM"}`;
 }
 
-export function fmtTime(d: Date | string) {
+export function fmtTime(d: Date | string, twelve: boolean | undefined = hour12) {
   const date = typeof d === "string" ? new Date(d) : d;
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12 });
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: twelve });
 }
 
 export function fmtDate(d: Date | string, opts: Intl.DateTimeFormatOptions = {}) {
@@ -78,9 +81,9 @@ export function addDays(d: Date, n: number) {
 }
 
 /** Start of the week (Monday by default, Sunday if preferred). */
-export function startOfWeek(d: Date) {
+export function startOfWeek(d: Date, weekStart: WeekStart = currentWeekStart()) {
   const x = startOfDay(d);
-  const day = weekStartsSunday ? x.getDay() : (x.getDay() + 6) % 7;
+  const day = weekStart === "sunday" ? x.getDay() : (x.getDay() + 6) % 7;
   x.setDate(x.getDate() - day);
   return x;
 }
@@ -89,9 +92,9 @@ export function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
 
-export function dayLabel(key: string) {
-  const today = dayKey(new Date());
-  const yesterday = dayKey(addDays(new Date(), -1));
+export function dayLabel(key: string, now: Date = new Date()) {
+  const today = dayKey(now);
+  const yesterday = dayKey(addDays(now, -1));
   const date = new Date(key + "T00:00:00");
   const long = date.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
   if (key === today) return `Today · ${long}`;
@@ -137,15 +140,15 @@ export const PERIODS: { key: PeriodKey; label: string }[] = [
 ];
 
 /** Inclusive [from, to] day keys for a period. */
-export function periodRange(key: PeriodKey, now = new Date()): { from: string; to: string } {
+export function periodRange(key: PeriodKey, now = new Date(), weekStart: WeekStart = currentWeekStart()): { from: string; to: string } {
   const today = startOfDay(now);
   switch (key) {
     case "today":
       return { from: dayKey(today), to: dayKey(today) };
     case "this_week":
-      return { from: dayKey(startOfWeek(today)), to: dayKey(today) };
+      return { from: dayKey(startOfWeek(today, weekStart)), to: dayKey(today) };
     case "last_week": {
-      const s = addDays(startOfWeek(today), -7);
+      const s = addDays(startOfWeek(today, weekStart), -7);
       return { from: dayKey(s), to: dayKey(addDays(s, 6)) };
     }
     case "this_month":

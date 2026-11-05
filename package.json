@@ -9,40 +9,58 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "postinstall": "prisma generate",
-    "db:push": "prisma db push",
-    "db:seed": "tsx prisma/seed.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:new": "prisma migrate dev --create-only",
+    "db:migrate:status": "prisma migrate status",
+    "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
+    "admin:recover": "tsx scripts/admin-recover.ts",
     "dev:turbo": "next dev",
-    "build:local": "next build --webpack"
+    "build:local": "next build --webpack",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:db:reset": "node scripts/with-test-env.mjs npx prisma migrate reset --force"
+  },
+  "engines": {
+    "node": ">=24.22.1 <25"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.0",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
     "bcryptjs": "^3.0.2",
     "jose": "^6.0.0",
     "jspdf": "^4.0.0",
     "jspdf-autotable": "^5.0.0",
     "lucide-react": "^1.0.0",
     "next": "16.4.5",
-    "nodemailer": "^7.0.13",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
+    "nodemailer": "10.3.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "recharts": "^3.0.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/nodemailer": "^7.0.12",
+    "@types/node": "^24.19.2",
+    "@types/nodemailer": "8.0.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.4.5",
-    "prisma": "^6.19.0",
+    "prisma": "7.10.1",
     "tailwindcss": "^4",
     "tsx": "^4.19.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
   },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.3"
+    }
   }
 }

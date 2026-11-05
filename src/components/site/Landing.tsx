@@ -79,9 +79,9 @@ export function Landing({ signedIn }: { signedIn: boolean }) {
             </div>
             <ul className="mt-3 divide-y divide-line">
               {[
-                ["Fix checkout bug", "Website Redesign", "#5a7462", "2h 10m"],
-                ["Sprint planning", "Internal Tools", "#86a08d", "45m"],
-                ["Client call", "Acme Corp", "#a7bcad", "1h 22m"],
+                ["Fix checkout bug", "Website Redesign", "#0f62cc", "2h 10m"],
+                ["Sprint planning", "Internal Tools", "#4f92ea", "45m"],
+                ["Client call", "Acme Corp", "#9cc2f5", "1h 22m"],
               ].map(([t, p, c, d]) => (
                 <li key={t} className="flex items-center gap-3 py-2.5 text-sm">
                   <span className="h-8 w-1 rounded-full" style={{ background: c }} />

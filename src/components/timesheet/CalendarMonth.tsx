@@ -77,14 +77,14 @@ export function CalendarMonth({
                 aria-label={`${d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" })}: ${data ? fmtHours(data.total) : "no time"}`}
               >
                 <span className="flex items-center justify-between">
-                  <span className={cx("flex h-6 w-6 items-center justify-center rounded-full text-xs font-extrabold", key === todayKey ? "bg-ink-900 text-white" : inMonth ? "text-ink-800" : "text-ink-300")}>{d.getDate()}</span>
+                  <span className={cx("flex h-6 w-6 items-center justify-center rounded-full text-xs font-extrabold", key === todayKey ? "bg-brand-600 text-white" : inMonth ? "text-ink-800" : "text-ink-300")}>{d.getDate()}</span>
                   {data && inMonth && <span className={cx("tabular rounded-full px-1.5 py-0.5 text-[11px] font-bold", data.total >= 8 * 3600 ? "bg-brand-700 text-white" : "bg-brand-50 text-brand-800")}>{fmtHours(data.total)}</span>}
                 </span>
                 {inMonth && data && (
                   <span className="flex flex-col gap-0.5">
                     {data.items.slice(0, 3).map((it) => (
                       <span key={it.id} className="flex items-center gap-1.5 truncate text-[11px] font-semibold text-ink-700">
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: it.color ?? "#9aa39e" }} />
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: it.color ?? "#9aa0a9" }} />
                         <span className="truncate">{it.name}</span>
                         <span className="tabular ml-auto shrink-0 text-ink-500">{fmtHours(it.seconds)}</span>
                       </span>

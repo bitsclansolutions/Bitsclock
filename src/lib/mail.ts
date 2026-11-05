@@ -35,10 +35,15 @@ function transporter() {
   return transport;
 }
 
-/** Public origin of the app for links in emails: APP_URL, else the request's host, else localhost. */
+/**
+ * Public origin of the app for links in emails.
+ * Production: APP_URL only, never request headers (R-062); the server refuses to start
+ * without it (src/instrumentation.ts). Development: APP_URL, else the request's host.
+ */
 export function appUrl(req?: Request) {
   const configured = process.env.APP_URL?.trim().replace(/\/+$/, "");
   if (configured) return configured;
+  if (process.env.NODE_ENV === "production") throw new Error("APP_URL must be set in production; email links are never built from request headers.");
   if (req) {
     const h = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
     if (h) {
@@ -80,20 +85,20 @@ function layout(title: string, bodyHtml: string, footer = "You're receiving this
   return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(title)}</title></head>
-<body style="margin:0;padding:0;background:#f2f3ef;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1a1d1a;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f2f3ef;padding:32px 16px;">
+<body style="margin:0;padding:0;background:#f5f6f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1a1d24;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f6f8;padding:32px 16px;">
     <tr><td align="center">
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;">
         <tr><td style="padding:0 8px 18px;">
           <table role="presentation" cellspacing="0" cellpadding="0"><tr>
-            <td style="width:36px;height:36px;border-radius:999px;background:#176643;text-align:center;vertical-align:middle;color:#fff;font-weight:800;font-size:16px;">B</td>
-            <td style="padding-left:10px;font-size:17px;font-weight:800;color:#1a1d1a;">Bitsclock</td>
+            <td style="width:36px;height:36px;border-radius:999px;background:#0f62cc;text-align:center;vertical-align:middle;color:#fff;font-weight:800;font-size:16px;">B</td>
+            <td style="padding-left:10px;font-size:17px;font-weight:800;color:#1a1d24;">Bitsclock</td>
           </tr></table>
         </td></tr>
         <tr><td style="background:#ffffff;border-radius:20px;padding:36px 32px;box-shadow:0 1px 2px rgba(0,0,0,.05);">
           ${bodyHtml}
         </td></tr>
-        <tr><td style="padding:18px 8px 0;font-size:12px;line-height:1.5;color:#7a827a;">${footer}</td></tr>
+        <tr><td style="padding:18px 8px 0;font-size:12px;line-height:1.5;color:#78808c;">${footer}</td></tr>
       </table>
     </td></tr>
   </table>
@@ -101,15 +106,15 @@ function layout(title: string, bodyHtml: string, footer = "You're receiving this
 </html>`;
 }
 
-const h1 = (t: string) => `<h1 style="margin:0 0 12px;font-size:24px;line-height:1.25;font-weight:800;letter-spacing:-.01em;color:#1a1d1a;">${esc(t)}</h1>`;
-const p = (t: string) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3f463f;">${t}</p>`;
+const h1 = (t: string) => `<h1 style="margin:0 0 12px;font-size:24px;line-height:1.25;font-weight:800;letter-spacing:-.01em;color:#1a1d24;">${esc(t)}</h1>`;
+const p = (t: string) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3f4652;">${t}</p>`;
 const button = (href: string, label: string) =>
-  `<table role="presentation" cellspacing="0" cellpadding="0" style="margin:8px 0 24px;"><tr><td style="border-radius:999px;background:#176643;">
+  `<table role="presentation" cellspacing="0" cellpadding="0" style="margin:8px 0 24px;"><tr><td style="border-radius:999px;background:#0f62cc;">
      <a href="${esc(href)}" style="display:inline-block;padding:12px 22px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:999px;">${esc(label)}</a>
    </td></tr></table>`;
 const credentials = (rows: [string, string][]) =>
-  `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 20px;background:#f2f3ef;border-radius:14px;">
-     ${rows.map(([k, v]) => `<tr><td style="padding:10px 16px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#7a827a;width:120px;">${esc(k)}</td><td style="padding:10px 16px 10px 0;font-size:15px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#1a1d1a;">${esc(v)}</td></tr>`).join("")}
+  `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 20px;background:#f5f6f8;border-radius:14px;">
+     ${rows.map(([k, v]) => `<tr><td style="padding:10px 16px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#78808c;width:120px;">${esc(k)}</td><td style="padding:10px 16px 10px 0;font-size:15px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#1a1d24;">${esc(v)}</td></tr>`).join("")}
    </table>`;
 
 /** Sent when an administrator adds a member: sign-in link plus the temporary password. */
@@ -119,19 +124,19 @@ export function invitationEmail(opts: { to: string; name: string; invitedBy: str
   const html = layout(
     subject,
     h1(`Welcome, ${opts.name}`) +
-      p(`${esc(opts.invitedBy)} added you to the Bitsclock workspace. Use the temporary password below to sign in, then change it from <strong>Settings → Password</strong> at your first opportunity.`) +
+      p(`${esc(opts.invitedBy)} added you to the Bitsclock workspace. Use the temporary password below to sign in, then change it from <strong>Profile → Password</strong> at your first opportunity.`) +
       credentials([
         ["Sign-in page", loginUrl],
         ["Email", opts.to],
         ["Password", opts.password],
       ]) +
       button(loginUrl, "Sign in to Bitsclock") +
-      p(`<span style="color:#7a827a;font-size:13px;">If the button doesn't work, copy this link into your browser:<br><a href="${esc(loginUrl)}" style="color:#176643;">${esc(loginUrl)}</a></span>`),
+      p(`<span style="color:#78808c;font-size:13px;">If the button doesn't work, copy this link into your browser:<br><a href="${esc(loginUrl)}" style="color:#0f62cc;">${esc(loginUrl)}</a></span>`),
   );
   const text = [
     `Welcome, ${opts.name}`,
     "",
-    `${opts.invitedBy} added you to the Bitsclock workspace. Sign in with the temporary password below, then change it from Settings -> Password.`,
+    `${opts.invitedBy} added you to the Bitsclock workspace. Sign in with the temporary password below, then change it from Profile -> Password.`,
     "",
     `Sign-in page: ${loginUrl}`,
     `Email:        ${opts.to}`,
@@ -149,19 +154,19 @@ export function passwordResetByAdminEmail(opts: { to: string; name: string; rese
   const html = layout(
     subject,
     h1(`Hi ${opts.name}`) +
-      p(`${esc(opts.resetBy)} reset your password. Every device has been signed out. Sign in with the temporary password below, then choose a new one from <strong>Settings → Password</strong>.`) +
+      p(`${esc(opts.resetBy)} reset your password. Every device has been signed out. Sign in with the temporary password below, then choose a new one from <strong>Profile → Password</strong>.`) +
       credentials([
         ["Sign-in page", loginUrl],
         ["Email", opts.to],
         ["Password", opts.password],
       ]) +
       button(loginUrl, "Sign in to Bitsclock") +
-      p(`<span style="color:#7a827a;font-size:13px;">Didn't expect this? Contact your administrator.</span>`),
+      p(`<span style="color:#78808c;font-size:13px;">Didn't expect this? Contact your administrator.</span>`),
   );
   const text = [
     `Hi ${opts.name}`,
     "",
-    `${opts.resetBy} reset your password. Every device has been signed out. Sign in with the temporary password below, then choose a new one from Settings -> Password.`,
+    `${opts.resetBy} reset your password. Every device has been signed out. Sign in with the temporary password below, then choose a new one from Profile -> Password.`,
     "",
     `Sign-in page: ${loginUrl}`,
     `Email:        ${opts.to}`,
@@ -180,9 +185,9 @@ export function passwordResetCodeEmail(opts: { to: string; name: string; code: s
     subject,
     h1("Reset your password") +
       p(`Hi ${esc(opts.name)}, enter this code on the reset page to choose a new password. It expires in ${opts.minutes} minutes and works once.`) +
-      `<p style="margin:0 0 24px;font-size:36px;line-height:1;font-weight:800;letter-spacing:.3em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#176643;">${esc(opts.code)}</p>` +
+      `<p style="margin:0 0 24px;font-size:36px;line-height:1;font-weight:800;letter-spacing:.3em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#0f62cc;">${esc(opts.code)}</p>` +
       button(resetUrl, "Open the reset page") +
-      p(`<span style="color:#7a827a;font-size:13px;">If you didn't ask to reset your password, you can ignore this email. Your password stays the same until the code is used.</span>`),
+      p(`<span style="color:#78808c;font-size:13px;">If you didn't ask to reset your password, you can ignore this email. Your password stays the same until the code is used.</span>`),
     "Never share this code. Bitsclock will never ask you for it by phone or chat.",
   );
   const text = [
@@ -207,7 +212,7 @@ export function passwordChangedEmail(opts: { to: string; name: string; url: stri
     h1("Password changed") +
       p(`Hi ${esc(opts.name)}, your password was just changed and every other device was signed out.`) +
       button(loginUrl, "Sign in") +
-      p(`<span style="color:#7a827a;font-size:13px;">If this wasn't you, contact your administrator straight away so they can reset the account.</span>`),
+      p(`<span style="color:#78808c;font-size:13px;">If this wasn't you, contact your administrator straight away so they can reset the account.</span>`),
   );
   const text = [
     "Password changed",

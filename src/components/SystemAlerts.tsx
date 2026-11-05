@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { AlertTriangle, Clock3, WifiOff, X } from "lucide-react";
-import { onLatency } from "@/lib/client";
+import { errMsg, onLatency } from "@/lib/client";
+import { useToast } from "@/context/ToastContext";
 import { readPrefs } from "@/lib/prefs";
 import { fmtHours } from "@/lib/time";
 import { useTimer } from "@/context/TimerContext";
@@ -19,7 +20,23 @@ export function SystemAlerts() {
   const [offline, setOffline] = useState(false);
   const [slow, setSlow] = useState(false);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
-  const { active, elapsed } = useTimer();
+  const { active, elapsed, stop } = useTimer();
+  const router = useRouter();
+  const toast = useToast();
+  const [stopping, setStopping] = useState(false);
+
+  /** R-040: stop the forgotten timer, then open it on the tracker so the end time can be corrected. */
+  const stopAndEdit = async () => {
+    setStopping(true);
+    try {
+      const stopped = await stop();
+      router.push(stopped ? `/tracker?edit=${encodeURIComponent(stopped.id)}` : "/tracker");
+    } catch (e) {
+      toast.error("Couldn't stop the timer", errMsg(e));
+    } finally {
+      setStopping(false);
+    }
+  };
 
   useEffect(() => {
     const sync = () => setOffline(typeof navigator !== "undefined" && navigator.onLine === false);
@@ -57,8 +74,12 @@ export function SystemAlerts() {
       tone: "info",
       icon: <Clock3 className="h-4 w-4" />,
       title: `Timer running for ${fmtHours(elapsed)}`,
-      body: "Still working on it? If you forgot to stop it, edit the entry's start or end time on the tracker.",
-      action: <Link href="/tracker" className="btn btn-sm btn-primary">Open tracker</Link>,
+      body: "Still working on it? If you forgot to stop it, stop it now and set the time you actually finished. Timers stop on their own after 24 hours.",
+      action: (
+        <button type="button" className="btn btn-sm btn-primary" disabled={stopping} onClick={stopAndEdit}>
+          {stopping ? "Stopping…" : "Stop and edit"}
+        </button>
+      ),
       dismissible: true,
     });
   }

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useId, useRef } from "react";
-import { Loader2, X } from "lucide-react";
+import { cloneElement, isValidElement, useEffect, useId, useRef } from "react";
+import { Loader2, RotateCcw, X } from "lucide-react";
 import { initials } from "@/lib/time";
+import { anyPopupOpen, initialFocus, useFocusTrap, useLatest } from "@/lib/focus";
 
 export function cx(...parts: (string | false | null | undefined)[]) {
   return parts.filter(Boolean).join(" ");
@@ -17,7 +18,7 @@ export function Avatar({ name, color, size = "md", className = "" }: { name: str
   return (
     <span
       className={cx("inline-flex shrink-0 items-center justify-center rounded-full font-bold text-white", sz, className)}
-      style={{ background: color ?? "#1f7a4d" }}
+      style={{ background: color ?? "#0f62cc" }}
       aria-hidden="true"
     >
       {initials(name) || "?"}
@@ -50,7 +51,7 @@ export function RoleBadge({ name, color }: { name: string; color: string }) {
 }
 
 export function ProjectDot({ color, className = "" }: { color?: string | null; className?: string }) {
-  return <span className={cx("inline-block h-2.5 w-2.5 shrink-0 rounded-full", className)} style={{ background: color ?? "#9aa39d" }} aria-hidden="true" />;
+  return <span className={cx("inline-block h-2.5 w-2.5 shrink-0 rounded-full", className)} style={{ background: color ?? "#9aa0a9" }} aria-hidden="true" />;
 }
 
 /** Page title lives in the shell header; this row holds page actions and an optional note. */
@@ -117,7 +118,7 @@ export function MiniLine({ values, accent = false }: { values: number[]; accent?
   const pts = values.map((v, i) => `${(i / Math.max(1, values.length - 1)) * 100},${40 - (v / max) * 34 - 3}`).join(" ");
   return (
     <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-full w-full" aria-hidden="true">
-      <polyline points={pts} fill="none" stroke={accent ? "rgba(255,255,255,0.85)" : "#1f7a4d"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      <polyline points={pts} fill="none" stroke={accent ? "rgba(255,255,255,0.85)" : "#0f62cc"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -137,11 +138,51 @@ export function Skeleton({ className = "" }: { className?: string }) {
   return <div className={cx("skeleton rounded-2xl", className)} aria-hidden="true" />;
 }
 
-export function Seg<T extends string>({ value, onChange, options, label }: { value: T; onChange: (v: T) => void; options: { value: T; label: React.ReactNode }[]; label?: string; size?: "sm" | "md" }) {
+/**
+ * Segmented choice, built as an ARIA radio group (R-057): one tab stop (the chosen
+ * option), arrow keys move and choose, and the group has a name for screen readers.
+ */
+export function Seg<T extends string>({
+  value,
+  onChange,
+  options,
+  label,
+  disabled = false,
+  title,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: React.ReactNode }[];
+  label: string;
+  size?: "sm" | "md";
+  /** Read-only: shows the current choice but can't be changed (e.g. set by the project). */
+  disabled?: boolean;
+  title?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const move = (e: React.KeyboardEvent, i: number) => {
+    const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    if (!delta) return;
+    e.preventDefault();
+    const next = (i + delta + options.length) % options.length;
+    onChange(options[next]!.value);
+    ref.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+  };
+  const selectedIndex = Math.max(0, options.findIndex((o) => o.value === value));
   return (
-    <div role="radiogroup" aria-label={label} className="seg">
-      {options.map((o) => (
-        <button key={o.value} type="button" role="radio" aria-checked={o.value === value} onClick={() => onChange(o.value)} className={cx(o.value === value && "on")}>
+    <div ref={ref} role="radiogroup" aria-label={label} aria-disabled={disabled || undefined} title={title} className="seg">
+      {options.map((o, i) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={o.value === value}
+          disabled={disabled}
+          tabIndex={i === selectedIndex ? 0 : -1}
+          onKeyDown={(e) => move(e, i)}
+          onClick={() => onChange(o.value)}
+          className={cx(o.value === value && "on")}
+        >
           {o.label}
         </button>
       ))}
@@ -152,19 +193,27 @@ export function Seg<T extends string>({ value, onChange, options, label }: { val
 export function Modal({ open, onClose, title, description, children, footer, width = "max-w-lg" }: { open: boolean; onClose: () => void; title: string; description?: string; children: React.ReactNode; footer?: React.ReactNode; width?: string }) {
   const titleId = useId();
   const ref = useRef<HTMLDivElement>(null);
+  // Callers pass a new onClose every render; keep it in a ref so the effect below runs only
+  // when the dialog opens. Before, a timer ticking every second re-ran it and yanked focus
+  // back to the first field (R-007).
+  const onCloseRef = useLatest(onClose);
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      // An open dropdown inside the dialog owns Escape (R-033).
+      if (e.key === "Escape" && !e.defaultPrevented && !anyPopupOpen()) onCloseRef.current();
+    };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    const first = ref.current?.querySelector<HTMLElement>("input,select,textarea,button:not([data-close])");
-    first?.focus();
+    if (ref.current && !ref.current.contains(document.activeElement)) initialFocus(ref.current)?.focus();
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
-  }, [open, onClose]);
+  }, [open, onCloseRef]);
+  // Tab stays inside the dialog; focus returns to the opener when it closes (R-034).
+  useFocusTrap(ref, open);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center bg-ink-900/30 p-0 backdrop-blur-[2px] sm:items-center sm:p-4" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -185,12 +234,43 @@ export function Modal({ open, onClose, title, description, children, footer, wid
   );
 }
 
+/**
+ * Label + control + hint/error. The hint or error is tied to the control with
+ * aria-describedby, and an error also sets aria-invalid, so screen readers announce
+ * them with the field (R-057).
+ */
 export function Field({ label, hint, error, children, htmlFor }: { label: string; hint?: string; error?: string; children: React.ReactNode; htmlFor?: string }) {
+  const noteId = useId();
+  const note = error || hint;
+  const control =
+    note && isValidElement<{ "aria-describedby"?: string; "aria-invalid"?: boolean }>(children)
+      ? cloneElement(children, { "aria-describedby": noteId, ...(error ? { "aria-invalid": true } : {}) })
+      : children;
   return (
     <div>
       <label className="label" htmlFor={htmlFor}>{label}</label>
-      {children}
-      {error ? <p className="mt-1 text-xs font-medium text-[#b5322b]">{error}</p> : hint ? <p className="mt-1 text-xs text-ink-500">{hint}</p> : null}
+      {control}
+      {error ? (
+        <p id={noteId} className="mt-1 text-xs font-medium text-[#b5322b]">{error}</p>
+      ) : hint ? (
+        <p id={noteId} className="mt-1 text-xs text-ink-500">{hint}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * A data view that failed to load (R-039): says what went wrong and offers Retry,
+ * instead of leaving skeletons on screen forever.
+ */
+export function LoadError({ what, message, onRetry, className = "" }: { what: string; message?: string; onRetry: () => void; className?: string }) {
+  return (
+    <div role="alert" className={cx("card flex flex-col items-center gap-3 px-6 py-10 text-center", className)}>
+      <p className="text-base font-extrabold text-ink-900">Couldn&apos;t load {what}</p>
+      {message && <p className="max-w-md text-sm text-ink-600">{message}</p>}
+      <button type="button" className="btn btn-secondary" onClick={onRetry}>
+        <RotateCcw className="h-4 w-4" /> Try again
+      </button>
     </div>
   );
 }
@@ -207,7 +287,7 @@ export function ErrorBanner({ message }: { message: string }) {
 export function Progress({ value, color }: { value: number; color?: string }) {
   return (
     <div className="h-2 w-full overflow-hidden rounded-full bg-ink-100" aria-hidden="true">
-      <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${Math.min(100, Math.max(0, value))}%`, background: color ?? "#1f7a4d" }} />
+      <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${Math.min(100, Math.max(0, value))}%`, background: color ?? "#0f62cc" }} />
     </div>
   );
 }

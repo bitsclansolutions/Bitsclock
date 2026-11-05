@@ -1,15 +1,16 @@
 // Bitsclock data model: users, custom roles with permissions, projects, time entries.
-// Database: PostgreSQL on Supabase. DATABASE_URL = pooled (pgbouncer) connection,
-// DIRECT_URL = direct connection used by `prisma db push` / migrations.
+// Database: PostgreSQL on Supabase. Connection strings live outside this file (Prisma 7):
+// - prisma.config.ts gives the CLI (migrations) DIRECT_URL, the direct connection.
+// - src/lib/prisma.ts gives the app DATABASE_URL, the pooled connection, via the pg adapter.
+// Schema changes go through `prisma migrate` (D-006); never `db push` against a shared database.
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
 }
 
 model Role {
@@ -21,6 +22,7 @@ model Role {
   isSystem    Boolean          @default(false)
   permissions RolePermission[]
   users       User[]
+  memberRequests MemberRequest[]
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
@@ -52,6 +54,15 @@ model User {
   tokenVersion Int         @default(0)
   sessions     RefreshSession[]
   passwordResets PasswordReset[]
+  memberRequestsMade    MemberRequest[] @relation("MemberRequestRequestedBy")
+  // Set when the invitation or password email couldn't be sent; the Team page offers
+  // "Resend invite" (R-049). Cleared by the next successful send.
+  inviteEmailFailedAt DateTime?
+  // Soft delete (D-011): the account is gone (no sign-in, hidden everywhere) but its time
+  // entries stay attributed. The email moves to deletedEmail so the address can be invited
+  // again; restoring puts it back if it's still free.
+  deletedAt    DateTime?
+  deletedEmail String?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
@@ -69,6 +80,9 @@ model RefreshSession {
   // several tabs) that still carry the old token are not treated as a stolen replay.
   prevTokenHash String?
   rotatedAt  DateTime  @default(now())
+  // The user's tokenVersion when this session was issued. Refresh refuses a session whose
+  // version no longer matches, so one tokenVersion bump ends every session (D-003).
+  tokenVersion Int     @default(0)
   remember   Boolean   @default(false)
   userAgent  String?
   ip         String?
@@ -98,6 +112,53 @@ model PasswordReset {
   @@map("bc_password_resets")
 }
 
+// A member's request to add someone (users.request, D-001). Only the Administrator can
+// approve (which creates the account and sends the invitation) or reject it.
+// At most one pending request per email (partial unique index in the migration).
+model MemberRequest {
+  id            String    @id @default(cuid())
+  name          String
+  email         String
+  jobTitle      String?
+  roleId        String
+  role          Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  requestedById String
+  requestedBy   User      @relation("MemberRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  // "pending" | "approved" | "rejected"
+  status        String    @default("pending")
+  note          String?
+  decidedById   String?
+  decidedAt     DateTime?
+  createdUserId String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([requestedById])
+  @@map("bc_member_requests")
+}
+
+// Append-only record of privileged actions (D-001, R-022): member and role changes,
+// approvals, password resets, break-glass recovery. Names are copied so the log stays
+// readable after renames. Never updated or deleted by the app.
+model AuditLog {
+  id         String   @id @default(cuid())
+  // null for the break-glass script and other system actions.
+  actorId    String?
+  actorName  String
+  action     String
+  targetType String
+  targetId   String?
+  summary    String
+  meta       Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@map("bc_audit_log")
+}
+
 // One row per mutating request that carried an Idempotency-Key header, so a client
 // retry after a network failure replays the stored response instead of running twice.
 model IdempotencyKey {
@@ -119,11 +180,11 @@ model Project {
   isArchived  Boolean         @default(false)
   // Time logged on this project counts as billable. Entries copy this flag when created.
   billable    Boolean         @default(true)
-  // Who may log time: "all" = every active member, "selected" = only rows in members.
-  memberMode  String          @default("all")
-  // "project" = client/internal work. "activity" = a non-project bucket members can log
+  // Who may log time: all = every active member, selected = only rows in members.
+  memberMode  MemberMode      @default(all)
+  // project = client/internal work. activity = a non-project bucket members can log
   // time against (lunch break, internal meeting, training); same rules, shown separately.
-  kind        String          @default("project")
+  kind        ProjectKind     @default(project)
   members     ProjectMember[]
   createdById String?
   createdBy   User?           @relation("ProjectCreator", fields: [createdById], references: [id], onDelete: SetNull)
@@ -146,18 +207,46 @@ model ProjectMember {
   @@map("bc_project_members")
 }
 
+enum MemberMode {
+  all
+  selected
+}
+
+enum ProjectKind {
+  project
+  activity
+}
+
+// Workspace-wide settings; a single row with id "workspace".
+model WorkspaceSettings {
+  id          String    @id @default("workspace")
+  // Entries that start before this instant can only be created, edited or deleted by the
+  // Administrator (D-005): the period is invoiced.
+  lockDate    DateTime?
+  updatedById String?
+  updatedAt   DateTime  @updatedAt
+
+  @@map("bc_workspace_settings")
+}
+
+// Database-enforced rules (D-006, hand-written in the migration because Prisma can't express them):
+// - CHECK ("endTime" IS NULL OR "endTime" > "startTime")
+// - at most one running timer per user: unique index on ("userId") WHERE "endTime" IS NULL
+// Time history is never deleted by deleting a user or project (onDelete: Restrict).
 model TimeEntry {
   id              String    @id @default(cuid())
   userId          String
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Restrict)
   projectId       String?
-  project         Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  project         Project?  @relation(fields: [projectId], references: [id], onDelete: Restrict)
   description     String    @default("")
   startTime       DateTime
   // null while the timer is running
   endTime         DateTime?
   durationSeconds Int?
   billable        Boolean   @default(true)
+  // Closed automatically at start + 24 h because it was left running (D-005); the member should check it.
+  autoStopped     Boolean   @default(false)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 

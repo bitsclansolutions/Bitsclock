@@ -7,6 +7,7 @@ export const metadata: Metadata = { title: "Team" };
 
 export default async function TeamPage() {
   const user = await getSessionUser();
-  if (!user || !(hasPermission(user, "users.view") || hasPermission(user, "users.manage"))) return <Forbidden what="the team page" />;
+  const allowed = user && (["users.view", "users.manage", "users.request", "users.deactivate"] as const).some((p) => hasPermission(user, p));
+  if (!user || !allowed) return <Forbidden what="the team page" />;
   return <TeamView />;
 }

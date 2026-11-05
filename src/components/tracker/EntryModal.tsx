@@ -8,6 +8,8 @@ import { combineDateTime, dayKey, fmtHours, fmtTimeText, parseTimeText } from "@
 import { DollarSign } from "lucide-react";
 import { ErrorBanner, Field, Modal, Seg, cx } from "@/components/ui";
 import { ProjectSelect, type ProjectLite } from "@/components/ProjectSelect";
+import { useUser } from "@/context/UserContext";
+import { clearDraft, loadDraft, useDraft } from "@/lib/drafts";
 import { DescriptionInput } from "./DescriptionInput";
 
 type Props = {
@@ -22,6 +24,8 @@ type Props = {
 };
 
 export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved, defaults }: Props) {
+  // D-005: billable follows the project; only time.manage_all may override it.
+  const canOverrideBillable = useUser().can("time.manage_all");
   const editing = !!entry;
   const running = !!entry && entry.running;
   const [description, setDescription] = useState("");
@@ -34,6 +38,15 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
   const [end, setEnd] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  // Unsaved input survives an expired session (R-038).
+  const draftKey = `entry:${entry?.id ?? "new"}`;
+  type Draft = { description: string; projectId: string; date: string; start: string; end: string };
+  useDraft(draftKey, { description, projectId, date, start, end } satisfies Draft, open);
+  const close = () => {
+    clearDraft(draftKey);
+    onClose();
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -53,6 +66,14 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
       setDate(defaults?.date ?? dayKey(now));
       setStart(defaults?.start ?? fmtTimeText(new Date(now.getTime() - 3600_000)));
       setEnd(defaults?.end ?? fmtTimeText(now));
+    }
+    const draft = loadDraft<Draft>(`entry:${entry?.id ?? "new"}`);
+    if (draft) {
+      setDescription(draft.description);
+      setProjectId(draft.projectId);
+      setDate(draft.date);
+      setStart(draft.start);
+      setEnd(draft.end);
     }
   }, [open, entry, defaults]);
 
@@ -85,9 +106,11 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
       return;
     }
     // Build the exact payload and run the API's own schema on it before sending.
-    const patchBody: Record<string, unknown> = { description, projectId: projectId || null, billable, startTime: times.startAt.toISOString() };
+    // Without the override permission the project decides, so billable isn't sent at all.
+    const billableField = canOverrideBillable ? { billable } : {};
+    const patchBody: Record<string, unknown> = { description, projectId: projectId || null, ...billableField, startTime: times.startAt.toISOString() };
     if (!running && times.endAt) patchBody.endTime = times.endAt.toISOString();
-    const createBody = { description, projectId: projectId || null, billable, startTime: times.startAt.toISOString(), endTime: times.endAt?.toISOString() ?? "", ...(forUserId ? { userId: forUserId } : {}) };
+    const createBody = { description, projectId: projectId || null, ...billableField, startTime: times.startAt.toISOString(), endTime: times.endAt?.toISOString() ?? "", ...(forUserId ? { userId: forUserId } : {}) };
     const problem = editing && entry ? clientCheck(entryUpdateSchema, patchBody) : clientCheck(entryManualSchema, createBody);
     if (problem) {
       setError(problem);
@@ -103,7 +126,7 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
         const { entry: saved } = await api<{ entry: EntryDTO }>("/api/time-entries", { method: "POST", json: createBody });
         onSaved(saved);
       }
-      onClose();
+      close();
     } catch (err) {
       setError(errMsg(err));
     } finally {
@@ -119,12 +142,12 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={close}
       title={editing ? (running ? "Edit running timer" : "Edit time entry") : "Add time entry"}
       description={editing ? "Change what was worked on, the project or the times." : "Log work you already did with its start and end time."}
       footer={
         <>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn btn-secondary" onClick={close}>Cancel</button>
           <button type="submit" form="entry-form" className="btn btn-primary" disabled={busy}>
             {busy ? "Saving…" : editing ? "Save changes" : "Add entry"}
           </button>
@@ -135,6 +158,7 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
         <ErrorBanner message={error} />
         <Field label="Description" hint="Optional." htmlFor="e-desc">
           <DescriptionInput
+            multiline
             id="e-desc"
             value={description}
             onChange={setDescription}
@@ -150,17 +174,29 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
           <Field label="Project" htmlFor="e-project">
             <ProjectSelect id="e-project" value={projectId} onChange={setProjectId} projects={options} />
           </Field>
-          <Field label="Billing" hint={billableTouched ? undefined : "Follows the project"}>
-            <Seg
-              value={billable ? "billable" : "non_billable"}
-              onChange={(v) => {
-                setBillableTouched(true);
-                setBillable(v === "billable");
-              }}
-              label="Billing"
-              options={[{ value: "billable", label: <span className="inline-flex items-center gap-1"><DollarSign className="h-3.5 w-3.5" /> Billable</span> }, { value: "non_billable", label: "Non-billable" }]}
-            />
-          </Field>
+          {canOverrideBillable ? (
+            <Field label="Billing" hint={billableTouched ? undefined : "Follows the project"}>
+              <Seg
+                value={billable ? "billable" : "non_billable"}
+                onChange={(v) => {
+                  setBillableTouched(true);
+                  setBillable(v === "billable");
+                }}
+                label="Billing"
+                options={[{ value: "billable", label: <span className="inline-flex items-center gap-1"><DollarSign className="h-3.5 w-3.5" /> Billable</span> }, { value: "non_billable", label: "Non-billable" }]}
+              />
+            </Field>
+          ) : (
+            <Field label="Billing" hint="Set by the project">
+              <Seg
+                disabled
+                value={billable ? "billable" : "non_billable"}
+                onChange={() => {}}
+                label="Billing"
+                options={[{ value: "billable", label: <span className="inline-flex items-center gap-1"><DollarSign className="h-3.5 w-3.5" /> Billable</span> }, { value: "non_billable", label: "Non-billable" }]}
+              />
+            </Field>
+          )}
         </div>
         <div className="grid grid-cols-[1fr_auto_auto] items-end gap-3">
           <Field label="Date" htmlFor="e-date">

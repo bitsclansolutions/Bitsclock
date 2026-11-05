@@ -1,5 +1,5 @@
 import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
-import { prisma } from "./prisma";
+import { prisma, type Tx } from "./prisma";
 
 /**
  * Self-service password reset codes.
@@ -8,6 +8,8 @@ import { prisma } from "./prisma";
  *   used to reset passwords.
  * - Each code lives 15 minutes, allows 5 wrong guesses, and is consumed on first use.
  *   Requesting a new code invalidates the previous ones.
+ * - Attempts are counted and the code is consumed with conditional updates, so parallel
+ *   guesses can't exceed the cap and two correct submissions can't both succeed (R-043).
  */
 
 export const RESET_CODE_MINUTES = 15;
@@ -49,30 +51,27 @@ export async function issueResetCode(userId: string) {
   return { code, expiresAt };
 }
 
-export type ResetCheck = { ok: true; resetId: string } | { ok: false; reason: "invalid" | "locked" };
+export type ResetCodeResult = "ok" | "invalid" | "locked";
 
 /**
- * Check a submitted code. The attempt is counted before the comparison so a wrong guess
- * is never free; after RESET_MAX_ATTEMPTS the code is dead and a new one must be requested.
+ * Check a submitted code and, when it matches, consume it, all inside the caller's
+ * transaction. The attempt is counted before comparing (a wrong guess is never free) and
+ * only while under the cap. Wrong guesses must still be committed: the caller returns the
+ * result from its transaction instead of throwing, and reports the error after it commits.
  */
-export async function checkResetCode(userId: string, code: string): Promise<ResetCheck> {
-  const reset = await prisma.passwordReset.findFirst({
-    where: { userId, usedAt: null, expiresAt: { gt: new Date() } },
-    orderBy: { createdAt: "desc" },
-  });
-  if (!reset) return { ok: false, reason: "invalid" };
-  if (reset.attempts >= RESET_MAX_ATTEMPTS) return { ok: false, reason: "locked" };
-  const updated = await prisma.passwordReset.update({ where: { id: reset.id }, data: { attempts: { increment: 1 } }, select: { attempts: true } });
+export async function verifyAndConsumeResetCodeTx(tx: Pick<Tx, "passwordReset">, userId: string, code: string): Promise<ResetCodeResult> {
+  const now = new Date();
+  const reset = await tx.passwordReset.findFirst({ where: { userId, usedAt: null, expiresAt: { gt: now } }, orderBy: { createdAt: "desc" } });
+  if (!reset) return "invalid";
+  const counted = await tx.passwordReset.updateMany({ where: { id: reset.id, usedAt: null, attempts: { lt: RESET_MAX_ATTEMPTS } }, data: { attempts: { increment: 1 } } });
+  if (counted.count === 0) return "locked";
   const expected = Buffer.from(reset.codeHash, "hex");
   const given = Buffer.from(hashCode(userId, code), "hex");
   const match = expected.length === given.length && timingSafeEqual(expected, given);
-  if (!match) return { ok: false, reason: updated.attempts >= RESET_MAX_ATTEMPTS ? "locked" : "invalid" };
-  return { ok: true, resetId: reset.id };
-}
-
-/** Mark a code as used so it cannot be replayed. */
-export async function consumeResetCode(resetId: string) {
-  await prisma.passwordReset.update({ where: { id: resetId }, data: { usedAt: new Date() } });
+  if (!match) return reset.attempts + 1 >= RESET_MAX_ATTEMPTS ? "locked" : "invalid";
+  // Conditional consume: a parallel request that already used this code wins; this one fails.
+  const consumed = await tx.passwordReset.updateMany({ where: { id: reset.id, usedAt: null }, data: { usedAt: now } });
+  return consumed.count === 1 ? "ok" : "invalid";
 }
 
 /** Opportunistic cleanup of expired / used rows. */

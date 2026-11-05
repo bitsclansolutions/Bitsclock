@@ -3,7 +3,7 @@ import { ApiError, handler, json, jsonCached, parseBody, parseQuery, requirePerm
 import { projectCreateSchema, projectsQuerySchema } from "@/lib/validation";
 import { loadProjects, projectScope, validateMemberIds } from "@/lib/projects";
 import { PROJECT_COLORS } from "@/lib/time";
-import { cached, invalidateTags } from "@/lib/server-cache";
+import { cached, entryTags, invalidateTags } from "@/lib/server-cache";
 
 export type { ProjectDTO } from "@/lib/projects";
 
@@ -14,7 +14,8 @@ export const GET = handler(async (req) => {
   const { seeAll, seeMembers } = projectScope(me);
   const projects = await cached(
     `projects:${me.id}:${includeArchived === "1" ? 1 : 0}:${seeAll ? 1 : 0}${seeMembers ? 1 : 0}`,
-    { ttlMs: 30_000, tags: ["projects", "entries", "users", "roles"] },
+    // Totals cover the team for managers and only the caller otherwise (R-030).
+    { ttlMs: 30_000, tags: ["projects", ...entryTags(seeAll ? undefined : [me.id]), "users", "roles"] },
     () => loadProjects(me, includeArchived === "1", seeAll, seeMembers),
   );
   return jsonCached(req, { projects }, { maxAge: 15 });

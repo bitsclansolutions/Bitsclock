@@ -237,7 +237,7 @@ export function ProfileView() {
               const d = describeDevice(s.userAgent);
               return (
                 <div key={s.id} className="flex items-center gap-4 py-3.5">
-                  <span className={cx("flex h-10 w-10 shrink-0 items-center justify-center rounded-full", s.current ? "bg-ink-900 text-white" : "bg-ink-50 text-ink-600")}>
+                  <span className={cx("flex h-10 w-10 shrink-0 items-center justify-center rounded-full", s.current ? "bg-brand-600 text-white" : "bg-ink-50 text-ink-600")}>
                     {d.mobile ? <Smartphone className="h-[18px] w-[18px]" /> : s.current ? <Laptop className="h-[18px] w-[18px]" /> : <MonitorSmartphone className="h-[18px] w-[18px]" />}
                   </span>
                   <div className="min-w-0 flex-1">

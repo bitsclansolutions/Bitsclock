@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { createPortal } from "react-dom";
 import { MoreVertical } from "lucide-react";
 import { cx } from "./ui";
+import { usePopupOpen } from "@/lib/focus";
 
 export type RowMenuItem =
   | { divider: true }
@@ -65,41 +66,66 @@ export function RowMenu({ items, label = "More actions", align = "right", classN
     return () => cancelAnimationFrame(raf);
   }, [open, place]);
 
+  usePopupOpen(open);
+  const closeToButton = useCallback(() => {
+    setOpen(false);
+    btnRef.current?.focus();
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
       if (menuRef.current?.contains(e.target as Node) || btnRef.current?.contains(e.target as Node)) return;
       setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        btnRef.current?.focus();
-      }
+    const onMove = (e: Event) => {
+      if (menuRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
     };
-    const onMove = () => setOpen(false);
     document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onMove, true);
     window.addEventListener("resize", onMove);
-    // Focus the first enabled item for keyboard users.
-    const first = menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
-    first?.focus();
     return () => {
       document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
       window.removeEventListener("scroll", onMove, true);
       window.removeEventListener("resize", onMove);
     };
   }, [open]);
 
+  // Focus the first item once the portal has been positioned and actually rendered (R-009).
+  // Before, this ran while the menu didn't exist yet, so keyboard users never reached it.
+  const placed = pos !== null;
+  useEffect(() => {
+    if (open && placed) menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [open, placed]);
+
+  const items_ = () => Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
   const onMenuKey = (e: React.KeyboardEvent) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    e.preventDefault();
-    const btns = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+    const btns = items_();
     const i = btns.indexOf(document.activeElement as HTMLButtonElement);
-    const next = e.key === "ArrowDown" ? btns[(i + 1) % btns.length] : btns[(i - 1 + btns.length) % btns.length];
-    next?.focus();
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = e.key === "ArrowDown" ? btns[(i + 1) % btns.length] : btns[(i - 1 + btns.length) % btns.length];
+      next?.focus();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      (e.key === "Home" ? btns[0] : btns[btns.length - 1])?.focus();
+    } else if (e.key === "Escape") {
+      // The menu owns this Escape; a dialog around it stays open (R-033).
+      e.preventDefault();
+      e.stopPropagation();
+      closeToButton();
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      closeToButton();
+    }
+  };
+
+  const onButtonKey = (e: React.KeyboardEvent) => {
+    if (!open && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      setOpen(true);
+    }
   };
 
   return (
@@ -112,6 +138,7 @@ export function RowMenu({ items, label = "More actions", align = "right", classN
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         onClick={() => setOpen((o) => !o)}
+        onKeyDown={onButtonKey}
         className={cx("btn btn-ghost btn-icon h-8 w-8 text-ink-500 hover:text-ink-900", open && "bg-ink-100 text-ink-900", className)}
       >
         <MoreVertical className="h-4 w-4" />
@@ -123,6 +150,7 @@ export function RowMenu({ items, label = "More actions", align = "right", classN
             ref={menuRef}
             id={id}
             role="menu"
+            aria-label={label}
             onKeyDown={onMenuKey}
             className="fade-up fixed z-50 min-w-[11rem] max-h-[min(70vh,24rem)] overflow-y-auto rounded-2xl bg-white p-1.5 shadow-pop"
             style={{ top: pos.top, left: pos.left }}
@@ -135,6 +163,7 @@ export function RowMenu({ items, label = "More actions", align = "right", classN
                   key={i}
                   type="button"
                   role="menuitem"
+                  tabIndex={-1}
                   disabled={it.disabled}
                   title={it.hint}
                   onClick={() => {

@@ -2,8 +2,10 @@
  * Input hygiene shared by the browser forms and the API (no server-only imports).
  *
  * SQL injection is prevented structurally: every query goes through Prisma, which
- * sends values as bound parameters, never as SQL text (the codebase has no
- * $queryRaw / $executeRaw). These helpers add the second layer: each field is
+ * sends values as bound parameters. The raw SQL used for report aggregates is built
+ * only with Prisma.sql / Prisma.join (src/lib/entry-filter.ts, reports.ts, timesheet),
+ * so values are bound there too; nothing uses $queryRawUnsafe with request data.
+ * These helpers add the second layer: each field is
  * normalised and checked for the exact shape we expect before it touches the
  * database or the DOM.
  */
@@ -62,8 +64,24 @@ export const LIMITS = {
   search: 100,
 } as const;
 
-/** Safe redirect target: a same-origin path only (no protocol-relative "//evil.com"). */
+/**
+ * Safe redirect target: a plain same-origin path only (R-063). The value is decoded once
+ * and refused if, before or after decoding, it contains "//" anywhere, a backslash, a
+ * control character, or a "." / ".." path segment, so tricks like "/.//evil.com" or
+ * "/%2e//evil.com" can't turn into a protocol-relative or off-site URL.
+ */
 export function safeNextPath(value: string | null | undefined, fallback = "/dashboard") {
-  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || /[\x00-\x1F]/.test(value)) return fallback;
-  return value.length > 500 ? fallback : value;
+  if (!value || value.length > 500) return fallback;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return fallback;
+  }
+  for (const v of [value, decoded]) {
+    const path = v.split(/[?#]/)[0]!;
+    if (!v.startsWith("/") || path.includes("//") || v.includes("\\") || /[\x00-\x1F\x7F]/.test(v)) return fallback;
+    if (path.split("/").some((seg) => seg === "." || seg === "..")) return fallback;
+  }
+  return value;
 }

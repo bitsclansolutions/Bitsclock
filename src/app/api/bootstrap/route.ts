@@ -3,7 +3,7 @@ import { hasPermission, type SessionUser } from "@/lib/auth";
 import { getActiveEntry, type EntryDTO } from "@/lib/entries";
 import { loadMembers, type MemberDTO } from "@/lib/members";
 import { loadProjects, projectScope, type ProjectDTO } from "@/lib/projects";
-import { cached } from "@/lib/server-cache";
+import { cached, entryTags } from "@/lib/server-cache";
 
 export type BootstrapDTO = {
   user: SessionUser;
@@ -26,7 +26,9 @@ export const GET = handler(async (req) => {
   const canProjects = hasPermission(me, "projects.view");
   const fullMembers = hasPermission(me, "users.view");
   const canMembers = fullMembers || hasPermission(me, "time.view_all") || hasPermission(me, "reports.view_all") || hasPermission(me, "projects.manage");
-  const data = await cached<BootstrapDTO>(`bootstrap:${me.id}`, { ttlMs: 15_000, tags: ["users", "roles", "projects", "entries"] }, async () => {
+  // Team member lists and team project totals depend on everyone's time; otherwise only on the caller's (R-030).
+  const entryTag = canMembers || seeAll ? entryTags(undefined) : entryTags([me.id]);
+  const data = await cached<BootstrapDTO>(`bootstrap:${me.id}`, { ttlMs: 15_000, tags: ["users", "roles", "projects", ...entryTag] }, async () => {
     const [projects, members, active] = await Promise.all([
       canProjects ? loadProjects(me, false, seeAll, seeMembers) : Promise.resolve(null),
       canMembers ? loadMembers(new Date(NaN), fullMembers) : Promise.resolve(null),
