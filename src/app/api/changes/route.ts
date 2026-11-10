@@ -3,6 +3,7 @@ import { hasPermission } from "@/lib/auth";
 import { projectScope } from "@/lib/projects";
 import { changeToken, entryTags } from "@/lib/server-cache";
 import { workspaceTimeZone } from "@/lib/workspace";
+import { accessKey } from "@/lib/permissions";
 
 /**
  * Change feed for the browser: a token that changes whenever data this user can see
@@ -19,5 +20,7 @@ export const GET = handler(async () => {
     workspaceTimeZone(),
   ]);
   // The zone too: an open app reloads when the Administrator changes it (D-012).
-  return json({ token, timeZone }, { headers: { "Cache-Control": "no-store" } });
+  // And the caller's access: when their role or its permissions change, the app reloads so
+  // the menu and cached pages match what they may do now.
+  return json({ token, timeZone, access: accessKey(me) }, { headers: { "Cache-Control": "no-store" } });
 });

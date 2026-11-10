@@ -77,3 +77,8 @@ export function isValidPermission(key: string): key is Permission {
 export function isGrantablePermission(key: string): key is Permission {
   return PERMISSION_SET.has(key) && !ADMIN_ONLY_SET.has(key);
 }
+
+/** What a person may do, as one comparable string (role + permissions). Used to notice access changes. */
+export function accessKey(u: { isAdmin: boolean; role: { id: string }; permissions: readonly string[] }) {
+  return `${u.role.id}|${u.isAdmin ? "admin" : [...u.permissions].sort().join(",")}`;
+}

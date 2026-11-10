@@ -32,6 +32,13 @@ const nextConfig: NextConfig = {
   // webpack (`npm run dev`, used locally because the exFAT drive can't create
   // the junctions Turbopack needs) and Turbopack (`next build` on Vercel).
   poweredByHeader: false,
+  experimental: {
+    // Keep visited pages in the browser's router cache for 5 minutes, so switching back to a
+    // page is instant instead of a server round trip behind the loading skeleton. Safe here:
+    // pages are thin shells; their data comes from useApi, which refreshes itself after
+    // every change (own, other tabs, and the /api/changes feed).
+    staleTimes: { dynamic: 300, static: 300 },
+  },
   // The Playwright smoke suite runs its own dev server next to `npm run dev`; a separate
   // build directory keeps the two from fighting over .next.
   ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),

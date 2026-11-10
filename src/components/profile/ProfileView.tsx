@@ -134,8 +134,8 @@ export function ProfileView() {
     } catch {
       /* ignore */
     }
-    router.replace("/login");
-    router.refresh();
+    // Full page load: wipes this tab's in-memory data and page caches (see AppShell useLogout).
+    window.location.replace("/login");
   };
 
   const strength = (() => {

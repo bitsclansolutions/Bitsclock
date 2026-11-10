@@ -15,7 +15,7 @@ import { api, errMsg } from "@/lib/client";
 import { prefetch, seed, useLiveUpdates } from "@/lib/useApi";
 import type { BootstrapDTO } from "@/app/api/bootstrap/route";
 import { fmtClock, fmtHours } from "@/lib/time";
-import type { Permission } from "@/lib/permissions";
+import { accessKey, type Permission } from "@/lib/permissions";
 import { Avatar, cx } from "./ui";
 
 type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string; strokeWidth?: number }>; any?: Permission[] };
@@ -46,7 +46,6 @@ export const PAGE_META: Record<string, { title: string; subtitle: string }> = {
 
 /** Sign out this device: tell the server, drop per-session client state, go to the sign-in page. */
 function useLogout() {
-  const router = useRouter();
   return async () => {
     try {
       await api("/api/auth/logout", { method: "POST" });
@@ -59,8 +58,10 @@ function useLogout() {
     } catch {
       /* ignore */
     }
-    router.replace("/login");
-    router.refresh();
+    // A full page load, not a client-side navigation: it wipes everything this tab holds in
+    // memory (data cache, router cache of rendered pages), so the next person to sign in
+    // here never sees this person's data.
+    window.location.replace("/login");
   };
 }
 
@@ -145,7 +146,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [drawer]);
 
   // Other people's and other devices' changes appear without a reload.
-  useLiveUpdates();
+  useLiveUpdates(accessKey(user));
 
   // Apply saved display preferences, and warm the client cache with one bulk call
   // instead of a separate request per list.

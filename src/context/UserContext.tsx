@@ -5,6 +5,7 @@ import { DRAFT_OWNER_KEY } from "@/lib/drafts";
 import type { SessionUser } from "@/lib/auth";
 import type { Permission } from "@/lib/permissions";
 import { setTimeZone } from "@/lib/time";
+import { ensureCacheOwner } from "@/lib/useApi";
 
 type Ctx = { user: SessionUser; can: (p: Permission) => boolean };
 
@@ -14,6 +15,8 @@ export function UserProvider({ user, timeZone, children }: { user: SessionUser; 
   // Set during render, before any page renders, so every date on every page uses the
   // workspace zone from the first paint (D-012). Idempotent; same value on server and client.
   setTimeZone(timeZone);
+  // Cached data from another person who used this tab is dropped before anything renders.
+  ensureCacheOwner(user.id);
   const value = useMemo<Ctx>(
     () => ({ user, can: (p) => user.isAdmin || user.permissions.includes(p) }),
     [user],

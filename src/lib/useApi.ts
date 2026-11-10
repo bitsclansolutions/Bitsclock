@@ -97,6 +97,44 @@ function invalidateLocal(prefixes: string[]) {
   listeners.forEach((l) => l(prefixes));
 }
 
+/**
+ * The cache belongs to one signed-in person. Called by UserProvider before any page renders:
+ * when a different person is signed in than the one the cache was filled for (sign-out and
+ * sign-in in the same tab, a session that expired and another account signed in), every
+ * cached response is dropped first, in memory and in sessionStorage, so no one ever sees
+ * someone else's data, not even for a moment.
+ */
+let cacheOwner: string | null = null;
+const OWNER_KEY = "bc:cache-owner";
+export function ensureCacheOwner(userId: string) {
+  if (typeof window === "undefined" || cacheOwner === userId) return; // the server holds no client cache
+  let stored: string | null = null;
+  try {
+    stored = sessionStorage.getItem(OWNER_KEY);
+  } catch {
+    /* server render or blocked storage */
+  }
+  if ((cacheOwner !== null && cacheOwner !== userId) || (stored !== null && stored !== userId)) {
+    mem.clear();
+    fetchedAt.clear();
+    invalidatedAt.clear();
+    try {
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const k = sessionStorage.key(i);
+        if (k?.startsWith(STORAGE_PREFIX)) sessionStorage.removeItem(k);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  cacheOwner = userId;
+  try {
+    sessionStorage.setItem(OWNER_KEY, userId);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Subscribe to invalidations (local, from other tabs, or from the change feed). Returns an unsubscribe. */
 export function onInvalidate(listener: (prefixes: string[]) => void) {
   listeners.add(listener);
@@ -150,7 +188,7 @@ const CHANGE_POLL_MS = 10_000;
  * every 10 s while the tab is visible, and at once when the tab comes back into view.
  * When the token moves, everything cached is refreshed. Mounted once, by the app shell.
  */
-export function useLiveUpdates() {
+export function useLiveUpdates(access: string) {
   useEffect(() => {
     let token: string | null = null;
     let checkedAt = 0;
@@ -160,9 +198,10 @@ export function useLiveUpdates() {
       busy = true;
       const started = Date.now();
       try {
-        const res = await api<{ token: string; timeZone?: string }>("/api/changes", { cache: "no-store", retry: false });
-        // The Administrator changed the workspace time zone: every date on screen must be redrawn in it.
-        if (res.timeZone && res.timeZone !== currentTimeZone()) {
+        const res = await api<{ token: string; timeZone?: string; access?: string }>("/api/changes", { cache: "no-store", retry: false });
+        // The Administrator changed the workspace time zone (every date must be redrawn in it), or
+        // this person's role/permissions (menu and cached pages must match): reload once.
+        if ((res.timeZone && res.timeZone !== currentTimeZone()) || (res.access && res.access !== access)) {
           window.location.reload();
           return;
         }
@@ -187,7 +226,7 @@ export function useLiveUpdates() {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, []);
+  }, [access]);
 }
 
 type State<T> = { data?: T; error?: string; loading: boolean; stale: boolean };
