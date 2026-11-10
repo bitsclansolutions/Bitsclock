@@ -57,8 +57,9 @@ export function LoginForm() {
           /* ignore */
         }
       });
+      // One navigation only: the (app) layout is rendered fresh for the new session anyway,
+      // so the extra router.refresh() just rendered the page a second time.
       router.replace(safeNextPath(sp.get("next")));
-      router.refresh();
     } catch (err) {
       setError(errMsg(err));
       setOfferReset(err instanceof ApiClientError && (err.status === 401 || err.status === 429));

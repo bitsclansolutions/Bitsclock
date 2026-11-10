@@ -4,7 +4,8 @@ import { handler, json, parseBody, ApiError } from "@/lib/api";
 import { startSession, toSessionUser, userWithRole } from "@/lib/auth";
 import { clientIp, envLimit, rateLimit, rateLimitReset } from "@/lib/rate-limit";
 import { loginSchema } from "@/lib/validation";
-import { passwordMatches } from "@/lib/password";
+import { BCRYPT_COST, needsRehash, passwordMatches } from "@/lib/password";
+import { runAfterResponse } from "@/lib/background";
 
 // Hash compared when the email is unknown, so a wrong email takes as long as a wrong password.
 const DUMMY_HASH = bcrypt.hashSync("not-a-real-password", 10);
@@ -34,19 +35,32 @@ export const POST = handler(
     const ip = clientIp(req);
     const tooMany = (retry: number) =>
       new ApiError(429, `Too many sign-in attempts. For your security, wait ${waitText(retry)} and try again, or reset your password.`, { "Retry-After": String(retry) });
-    const here = await rateLimit(`login:${email}:${ip}`, 8, WINDOW);
+    // Both limits and the user lookup are independent, so they share one round trip.
+    // The password is only checked after both limits pass.
+    const [here, anywhere, user] = await Promise.all([
+      rateLimit(`login:${email}:${ip}`, 8, WINDOW),
+      rateLimit(`login:${email}`, envLimit("LOGIN_LIMIT_PER_ACCOUNT", 50), WINDOW),
+      prisma.user.findUnique({ where: { email }, ...userWithRole }),
+    ]);
     if (!here.ok) throw tooMany(here.retryAfterSec);
-    const anywhere = await rateLimit(`login:${email}`, envLimit("LOGIN_LIMIT_PER_ACCOUNT", 50), WINDOW);
     if (!anywhere.ok) throw tooMany(anywhere.retryAfterSec);
 
-    const user = await prisma.user.findUnique({ where: { email }, ...userWithRole });
-    const ok = await passwordMatches(password, user?.passwordHash ?? DUMMY_HASH);
-    if (!user || !ok) throw new ApiError(401, BAD_CREDENTIALS);
+    const matched = await passwordMatches(password, user?.passwordHash ?? DUMMY_HASH);
+    if (!user || !matched) throw new ApiError(401, BAD_CREDENTIALS);
     // Only reached with the right password, so saying "deactivated" reveals nothing new.
     if (!user.isActive) throw new ApiError(403, "This account has been deactivated. Ask your administrator to reactivate it.");
 
-    await rateLimitReset(`login:${email}:${ip}`);
     await startSession(user, { remember, userAgent: req.headers.get("user-agent"), ip });
+    runAfterResponse("login limit reset", () => rateLimitReset(`login:${email}:${ip}`));
+    // Hashes saved with another cost (e.g. the seeded admin at 12) are re-saved at the standard cost,
+    // so the next sign-in is fast. Only if the hash is unchanged meanwhile (no race with a password change).
+    if (needsRehash(user.passwordHash)) {
+      const old = user.passwordHash;
+      runAfterResponse("password rehash", async () => {
+        const passwordHash = await bcrypt.hash(matched, BCRYPT_COST);
+        await prisma.user.updateMany({ where: { id: user.id, passwordHash: old }, data: { passwordHash } });
+      });
+    }
     return json({ user: toSessionUser(user) }, { headers: { "Cache-Control": "no-store" } });
   },
   { limit: () => envLimit("LOGIN_LIMIT_PER_IP", 300), windowMs: WINDOW },

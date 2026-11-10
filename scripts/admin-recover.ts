@@ -65,7 +65,7 @@ async function main() {
         fail("pass --keep <id> to choose the account to recover. Move the others to another role from the Team page afterwards.");
       }
     }
-    const hash = await bcrypt.hash(password, 12);
+    const hash = await bcrypt.hash(password, 10);
 
     const result = await prisma.$transaction(async (tx) => {
       if (!target) {

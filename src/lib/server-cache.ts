@@ -21,6 +21,7 @@
  */
 
 import { kv, kvEnabled, kvPipeline } from "./kv";
+import { runAfterResponse } from "./background";
 
 export type CacheTag = "users" | "roles" | "projects" | "entries" | "settings" | `entries:${string}`;
 
@@ -35,23 +36,31 @@ const generations = new Map<string, number>();
 const gen = (t: string) => generations.get(t) ?? 0;
 
 // Tag versions from Redis, cached briefly per tag so the hot path costs one round trip per few seconds.
+// This process's own invalidations take effect at once; another instance's within VERSIONS_TTL_MS.
 const versions = new Map<string, { v: number; at: number }>();
-const VERSIONS_TTL_MS = 2000;
+const VERSIONS_TTL_MS = 5000;
+// Tags whose versions are being fetched right now: parallel cached() calls share one MGET.
+const versionsInflight = new Map<string, Promise<void>>();
 
 async function tagVersions(tags: CacheTag[]): Promise<number[]> {
+  // A change made in this process is still on its way to Redis: wait for it, so we read the new version.
+  if (pendingBumps.size) await Promise.all([...pendingBumps]);
   const now = Date.now();
-  const missing = tags.filter((t) => {
+  const stale = tags.filter((t) => {
     const hit = versions.get(t);
     return !hit || now - hit.at >= VERSIONS_TTL_MS;
   });
+  const missing = stale.filter((t) => !versionsInflight.has(t));
   if (missing.length) {
-    try {
-      const raw = await kv<(string | null)[]>("MGET", ...missing.map((t) => `tagver:${t}`));
-      missing.forEach((t, i) => versions.set(t, { v: Number(raw[i] ?? 0), at: now }));
-    } catch {
-      for (const t of missing) if (!versions.has(t)) versions.set(t, { v: 0, at: now });
-    }
+    const p = kv<(string | null)[]>("MGET", ...missing.map((t) => `tagver:${t}`))
+      .then((raw) => missing.forEach((t, i) => versions.set(t, { v: Number(raw[i] ?? 0), at: Date.now() })))
+      .catch(() => {
+        for (const t of missing) if (!versions.has(t)) versions.set(t, { v: 0, at: Date.now() });
+      })
+      .finally(() => missing.forEach((t) => versionsInflight.delete(t)));
+    missing.forEach((t) => versionsInflight.set(t, p));
   }
+  await Promise.all([...new Set(stale.map((t) => versionsInflight.get(t)).filter(Boolean))]);
   return tags.map((t) => versions.get(t)?.v ?? 0);
 }
 
@@ -89,13 +98,17 @@ export async function cached<T>(key: string, opts: { ttlMs: number; tags: CacheT
   if (pending) return pending as Promise<T>;
 
   const before = opts.tags.map(gen);
+  // ±15% jitter: entries written together don't all expire together and reload the database at once.
+  const ttlMs = Math.max(1, Math.round(opts.ttlMs * (0.85 + Math.random() * 0.3)));
   const p = (async () => {
     if (kvEnabled) {
       try {
         const raw = await kv<string | null>("GET", `c:${fullKey}`);
         if (raw) {
           const value = JSON.parse(raw) as T;
-          l1Set(fullKey, value, Math.min(opts.ttlMs, 5000), opts.tags);
+          // The key carries the tag versions, so an invalidation changes the key; keeping the
+          // copy in memory for the full TTL is safe and saves a Redis GET per request.
+          l1Set(fullKey, value, ttlMs, opts.tags);
           return value;
         }
       } catch {
@@ -106,8 +119,9 @@ export async function cached<T>(key: string, opts: { ttlMs: number; tags: CacheT
     // Invalidated while we were loading: the value may predate the change, so don't keep it.
     const overtaken = opts.tags.some((t, i) => gen(t) !== before[i]);
     if (!overtaken) {
-      l1Set(fullKey, value, opts.ttlMs, opts.tags);
-      if (kvEnabled) await kv("SET", `c:${fullKey}`, JSON.stringify(value), "PX", opts.ttlMs).catch(() => {});
+      l1Set(fullKey, value, ttlMs, opts.tags);
+      // Shared copy for other instances, written after the response so this request doesn't wait.
+      if (kvEnabled) runAfterResponse("cache set", () => kv("SET", `c:${fullKey}`, JSON.stringify(value), "PX", ttlMs));
     }
     return value;
   })().finally(() => inflight.delete(fullKey));
@@ -127,7 +141,9 @@ export function invalidateTags(...tags: CacheTag[]) {
   // In-flight loads still finish, but the generation check stops them caching what they got.
   if (kvEnabled) {
     for (const t of tags) versions.delete(t); // re-read after the bump
-    const bump = kvPipeline(tags.map((t) => ["INCR", `tagver:${t}`]))
+    const bump = kvPipeline<number>(tags.map((t) => ["INCR", `tagver:${t}`]))
+      // The new versions come straight back: no extra MGET, and no window where this process reads the old one.
+      .then((vs) => tags.forEach((t, i) => versions.set(t, { v: Number(vs[i] ?? 0), at: Date.now() })))
       .catch(() => {})
       .finally(() => pendingBumps.delete(bump));
     pendingBumps.add(bump);
@@ -154,6 +170,7 @@ export function __resetCacheForTests() {
   store.clear();
   inflight.clear();
   versions.clear();
+  versionsInflight.clear();
   generations.clear();
 }
 

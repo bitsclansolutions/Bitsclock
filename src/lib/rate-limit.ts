@@ -7,6 +7,7 @@
  */
 
 import { kv, kvEnabled, kvPipeline } from "./kv";
+import { runAfterResponse } from "./background";
 
 // Each bucket remembers its own window, so the sweep never trims a 15-minute bucket with
 // a 1-minute window (R-013: that turned "8 sign-ins per 15 min" into roughly 8 per minute).
@@ -59,6 +60,71 @@ export async function rateLimit(key: string, limit: number, windowMs: number): P
   }
 }
 
+/**
+ * Fast flood limiter for the general per-IP / per-user limits on every API call.
+ * Counts locally and syncs to Redis after the response (INCRBY), so a normal request
+ * never waits on Redis. Only when the last known shared count plus local hits reaches
+ * half the limit does it fall back to a synchronous Redis check (the exact `rateLimit`).
+ * Across instances the limit is approximate by design; strict limits (sign-in, password
+ * reset) keep using `rateLimit`.
+ */
+type Shared = { global: number; pending: number; flushing: boolean; windowEnd: number; lastSync: number };
+const shared = new Map<string, Shared>();
+/** Each counter syncs to Redis at most this often per instance; hits in between are batched into one INCRBY. */
+const SYNC_EVERY_MS = 1000;
+
+export async function rateLimitFast(key: string, limit: number, windowMs: number): Promise<{ ok: boolean; retryAfterSec: number }> {
+  if (!kvEnabled) return memoryLimit(key, limit, windowMs);
+  const now = Date.now();
+  const window = Math.floor(now / windowMs);
+  const k = `rl:${key}:${window}`;
+  let s = shared.get(k);
+  if (!s) {
+    if (shared.size > 5000) for (const [key2, v] of shared) if (v.windowEnd <= now) shared.delete(key2);
+    s = { global: 0, pending: 0, flushing: false, windowEnd: (window + 1) * windowMs, lastSync: 0 };
+    shared.set(k, s);
+  }
+  if (s.global + s.pending + 1 <= Math.floor(limit / 2)) {
+    s.pending++;
+    if (!s.flushing && now - s.lastSync >= SYNC_EVERY_MS) {
+      s.flushing = true;
+      s.lastSync = now;
+      const entry = s;
+      runAfterResponse("rate-limit sync", async () => {
+        const n = entry.pending;
+        entry.pending = 0;
+        try {
+          const [count] = await kvPipeline<number>([
+            ["INCRBY", k, n],
+            ["PEXPIRE", k, windowMs, "NX"],
+          ]);
+          entry.global = count;
+        } catch {
+          entry.pending += n; // retry with the next sync
+        } finally {
+          entry.flushing = false;
+        }
+      });
+    }
+    return { ok: true, retryAfterSec: 0 };
+  }
+  // Close to the limit: exact shared count, synchronously.
+  const n = s.pending + 1;
+  s.pending = 0;
+  s.lastSync = now;
+  try {
+    const [count] = await kvPipeline<number>([
+      ["INCRBY", k, n],
+      ["PEXPIRE", k, windowMs, "NX"],
+    ]);
+    s.global = count;
+    if (count > limit) return { ok: false, retryAfterSec: Math.max(1, Math.ceil((s.windowEnd - now) / 1000)) };
+    return { ok: true, retryAfterSec: 0 };
+  } catch {
+    return memoryLimit(key, limit, windowMs);
+  }
+}
+
 /** Forget a key, e.g. after a successful sign-in. */
 export async function rateLimitReset(key: string, windowMs = 15 * 60_000) {
   buckets.delete(key);
@@ -76,6 +142,7 @@ export function envLimit(name: string, fallback: number) {
 /** Test hook: forget every in-memory counter. */
 export function __resetRateLimitsForTests() {
   buckets.clear();
+  shared.clear();
 }
 
 /**

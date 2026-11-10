@@ -64,7 +64,7 @@ async function main() {
     const taken = await prisma.user.findUnique({ where: { email: cfg.adminEmail } });
     if (taken) fail("SEED_ADMIN_EMAIL belongs to an existing non-admin member. Use another address or the admin:recover script.");
     await prisma.user.create({
-      data: { email: cfg.adminEmail, name: "Workspace Admin", passwordHash: await bcrypt.hash(cfg.adminPassword, 12), roleId: admin.id, jobTitle: "Administrator" },
+      data: { email: cfg.adminEmail, name: "Workspace Admin", passwordHash: await bcrypt.hash(cfg.adminPassword, 10), roleId: admin.id, jobTitle: "Administrator" },
     });
     console.log("Administrator created.");
   }

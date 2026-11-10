@@ -4,7 +4,7 @@ import { Prisma, prisma } from "./prisma";
 import { getSessionUser, hasPermission, type SessionUser } from "./auth";
 import type { Permission } from "./permissions";
 import { createHash } from "node:crypto";
-import { clientIp, envLimit, rateLimit } from "./rate-limit";
+import { clientIp, envLimit, rateLimitFast } from "./rate-limit";
 import { runAfterResponse } from "./background";
 import { settleInvalidations } from "./server-cache";
 import { isCuid } from "./sanitize";
@@ -215,13 +215,13 @@ export function handler<Ctx>(fn: (req: Request, ctx: Ctx) => Promise<Response>, 
       if (mutating) assertSameOrigin(req);
       // The IP limit and the session lookup are independent, so they share one round trip.
       // A request over the IP limit still never reaches the handler.
-      const [rl, me] = await Promise.all([rateLimit(`${route}:${method}:${clientIp(req)}`, limit, opts.windowMs ?? 60_000), getSessionUser()]);
+      const [rl, me] = await Promise.all([rateLimitFast(`${route}:${method}:${clientIp(req)}`, limit, opts.windowMs ?? 60_000), getSessionUser()]);
       if (!rl.ok) throw new ApiError(429, "Too many requests. Please slow down.", { "Retry-After": String(rl.retryAfterSec) });
 
       // Per user, whichever IP they come from: one account can't flood the API (R-067).
       if (me) {
         const perUser = mutating ? envLimit("USER_WRITES_PER_MIN", 60) : envLimit("USER_READS_PER_MIN", 300);
-        const u = await rateLimit(`user:${me.id}:${mutating ? "w" : "r"}`, perUser, 60_000);
+        const u = await rateLimitFast(`user:${me.id}:${mutating ? "w" : "r"}`, perUser, 60_000);
         if (!u.ok) throw new ApiError(429, "Too many requests from your account. Please slow down.", { "Retry-After": String(u.retryAfterSec) });
       }
 

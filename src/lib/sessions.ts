@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "crypto";
 import { prisma, type Tx } from "./prisma";
+import { runAfterResponse } from "./background";
 
 /**
  * Refresh-token sessions. The raw token is a random 256-bit value handed to the
@@ -41,8 +42,9 @@ export async function createRefreshSession(user: { id: string; tokenVersion: num
     },
   });
   // Housekeeping on sign-in (R-051): this user's sessions that ended over a week ago.
+  // Runs after the response so sign-in doesn't wait for it.
   const cutoff = new Date(Date.now() - 7 * 86400_000);
-  await prisma.refreshSession.deleteMany({ where: { userId: user.id, OR: [{ expiresAt: { lt: cutoff } }, { revokedAt: { lt: cutoff } }] } });
+  runAfterResponse("session prune", () => prisma.refreshSession.deleteMany({ where: { userId: user.id, OR: [{ expiresAt: { lt: cutoff } }, { revokedAt: { lt: cutoff } }] } }));
   return { raw, session };
 }
 
