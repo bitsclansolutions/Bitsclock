@@ -167,7 +167,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const items = NAV.filter((n) => !n.any || n.any.some((p) => can(p)));
   const meta = Object.entries(PAGE_META).find(([href]) => pathname === href || pathname.startsWith(href + "/"))?.[1];
   const isDashboard = pathname.startsWith("/dashboard");
-  const title = isDashboard ? `Hello, ${user.name.split(" ")[0]}!` : meta?.title ?? "Bitsclock";
+  const title = isDashboard ? `Hello, ${user.name}!` : meta?.title ?? "Bitsclock";
   const subtitle = meta?.subtitle ?? "";
 
   const railButton = (n: NavItem, labels: boolean) => {
@@ -262,12 +262,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex h-full min-w-0 flex-1 flex-col">
           {/* Greeting header, aligned with the logo row. Fixed; does not scroll. */}
           <header className="mb-5 flex min-h-[56px] shrink-0 flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-4">
+            <div className="flex min-w-0 items-center gap-4">
               <button type="button" aria-label="Open menu" className="btn btn-icon bg-white shadow-card lg:hidden" onClick={() => setDrawer(true)}>
                 <Menu className="h-5 w-5" />
               </button>
-              <div>
-                <h1 className="text-[22px] font-extrabold leading-tight tracking-tight text-ink-900 sm:text-2xl">{title}</h1>
+              <div className="min-w-0">
+                <h1 title={title} className="truncate text-[22px] font-extrabold leading-tight tracking-tight text-ink-900 sm:text-2xl">{title}</h1>
                 {subtitle && <p className="text-[13px] text-ink-500">{subtitle}</p>}
               </div>
             </div>
