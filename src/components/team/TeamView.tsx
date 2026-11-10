@@ -13,7 +13,7 @@ import { clearDraft, loadDraft, useDraft } from "@/lib/drafts";
 import { invalidate, useApi } from "@/lib/useApi";
 import type { MemberDTO } from "@/app/api/users/route";
 import type { RoleDTO } from "@/lib/roles";
-import { fmtDate, fmtHours, startOfWeek } from "@/lib/time";
+import { fmtDate, fmtHours, startOfWeek, toISO, zonedNow } from "@/lib/time";
 import { Avatar, Badge, EmptyState, ErrorBanner, Field, LoadError, Modal, PageHeader, RoleBadge, Seg, Skeleton, cx } from "@/components/ui";
 import { RowMenu, type RowMenuItem } from "@/components/RowMenu";
 import { Select } from "@/components/Select";
@@ -37,7 +37,7 @@ function lastActive(iso: string | null) {
   if (days <= 0) return "Today";
   if (days === 1) return "Yesterday";
   if (days < 7) return `${days} days ago`;
-  return fmtDate(d, days > 300 ? { year: "numeric" } : {});
+  return fmtDate(iso, days > 300 ? { year: "numeric" } : {});
 }
 
 /** One copyable line in the credentials modal. */
@@ -87,7 +87,7 @@ export function TeamView() {
   const pending = requests.filter((r) => r.status === "pending");
   const [requestForm, setRequestForm] = useState<RequestForm | null>(null);
 
-  const weekStart = useMemo(() => startOfWeek(new Date()).toISOString(), []);
+  const weekStart = useMemo(() => toISO(startOfWeek(zonedNow())), []);
   const membersQ = useApi<{ members: MemberDTO[] }>(`/api/users?weekStart=${encodeURIComponent(weekStart)}`, { ttlMs: 30_000 });
   const rolesQ = useApi<{ roles: RoleDTO[] }>("/api/roles", { ttlMs: 60_000 });
   const members = membersQ.data?.members ?? null;

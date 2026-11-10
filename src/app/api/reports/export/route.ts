@@ -11,7 +11,7 @@ import { buildReport, countEntries, detailedCsvStream, summaryToCsv } from "@/li
 export const GET = handler(async (req) => {
   const me = await requirePermission("reports.export");
   const url = new URL(req.url);
-  const f = parseReportQuery(url, me, "reports.view_all");
+  const f = await parseReportQuery(url, me, "reports.view_all");
   const from = f.from.toISOString().slice(0, 10);
   const to = f.to.toISOString().slice(0, 10);
   const headers = {

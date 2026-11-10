@@ -35,7 +35,7 @@ export async function exportReportPdf(report: ReportData, meta: PdfMeta, detaile
   doc.setFont("helvetica", "normal");
   doc.text(`${meta.title} · ${detailed ? "Detailed" : "Summary"}`, 40, 58);
   doc.setFontSize(9);
-  doc.text(`Generated ${new Date().toLocaleString()} (${meta.tz})`, W - 40, 58, { align: "right" });
+  doc.text(`Generated ${new Date().toLocaleString([], { timeZone: meta.tz })} (${meta.tz})`, W - 40, 58, { align: "right" });
 
   // Info row
   doc.setTextColor(...ink);
@@ -136,7 +136,7 @@ export async function exportReportPdf(report: ReportData, meta: PdfMeta, detaile
 
   if (detailed) {
     section(`Time entries (${Math.min(report.entries.length, 1000)}${report.entries.length > 1000 ? " of " + report.entries.length : ""})`);
-    const fmt = (iso: string) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const fmt = (iso: string) => new Date(iso).toLocaleString([], { timeZone: meta.tz, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     autoTable(doc, {
       ...tableStyle,
       startY: y,

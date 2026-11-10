@@ -223,6 +223,8 @@ model WorkspaceSettings {
   // Entries that start before this instant can only be created, edited or deleted by the
   // Administrator (D-005): the period is invoiced.
   lockDate    DateTime?
+  // IANA zone every member sees and enters time in, and reports group days by (D-012).
+  timeZone    String    @default("Asia/Karachi")
   updatedById String?
   updatedAt   DateTime  @updatedAt
 

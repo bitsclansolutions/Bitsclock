@@ -11,7 +11,7 @@ import type { EntryDTO } from "@/lib/entries";
 import type { ProjectDTO } from "@/app/api/projects/route";
 import type { MemberDTO } from "@/app/api/users/route";
 import type { TimesheetProject, TimesheetResponse } from "@/app/api/timesheet/route";
-import { addDays, combineDateTime, dayKey, fmtHM, fmtHours, fmtTime, fmtTimeText, initials, startOfDay, startOfMonth, startOfWeek } from "@/lib/time";
+import { addDays, combineDateTime, dayKey, fmtHM, fmtHours, fmtTime, fmtTimeText, initials, startOfDay, startOfMonth, startOfWeek, toISO, toZoned, zonedNow } from "@/lib/time";
 import { EmptyState, ErrorBanner, Field, Kpi, LoadError, Modal, PageHeader, ProjectDot, Seg, Skeleton, cx } from "@/components/ui";
 import { Select } from "@/components/Select";
 import { RowMenu } from "@/components/RowMenu";
@@ -95,9 +95,9 @@ function periodLabel(scope: Scope, from: Date, to: Date) {
 }
 
 function columnsFor(scope: Scope, from: Date, to: Date): Col[] {
-  const today = dayKey(new Date());
+  const today = dayKey(zonedNow());
   if (scope === "year") {
-    const nowM = monthKey(new Date());
+    const nowM = monthKey(zonedNow());
     return Array.from({ length: 12 }, (_, i) => {
       const d = new Date(from.getFullYear(), i, 1);
       const key = monthKey(d);
@@ -121,7 +121,7 @@ export function TimesheetView() {
   const canTrack = can("time.track");
 
   const [scope, setScope] = useState<Scope>("week");
-  const [anchor, setAnchor] = useState(() => startOfDay(new Date()));
+  const [anchor, setAnchor] = useState(() => startOfDay(zonedNow()));
   const [memberId, setMemberId] = useState("me");
   const [extraRows, setExtraRows] = useState<string[]>([]);
   const [cell, setCell] = useState<Cell | null>(null);
@@ -162,10 +162,10 @@ export function TimesheetView() {
 
   const { from, to } = useMemo(() => periodFor(scope, anchor), [scope, anchor]);
   const cols = useMemo(() => columnsFor(scope, from, to), [scope, from, to]);
-  const isCurrent = dayKey(periodFor(scope, new Date()).from) === dayKey(from);
+  const isCurrent = dayKey(periodFor(scope, zonedNow()).from) === dayKey(from);
   const viewingOthers = memberId !== "me" && memberId !== user.id;
   const editable = canTrack && (!viewingOthers || canManageAll);
-  const todayKey = dayKey(new Date());
+  const todayKey = dayKey(zonedNow());
 
   const range = rangeToInstants(dayKey(from), dayKey(to));
   const sheetQ = useApi<TimesheetResponse>(`/api/timesheet${qs({ from: range.from, to: range.to, tz: tzName(), userId: memberId })}`, { ttlMs: 15_000 });
@@ -269,7 +269,7 @@ export function TimesheetView() {
   const openSlot = (key: string, minute: number) => {
     let start = combineDateTime(key, { h: Math.floor(minute / 60), m: minute % 60 });
     let end = new Date(start.getTime() + 3600_000);
-    const now = new Date();
+    const now = zonedNow();
     if (end > now) {
       end = new Date(Math.floor(now.getTime() / 60000) * 60000);
       if (end.getTime() - start.getTime() < 5 * 60000) start = new Date(end.getTime() - 15 * 60000);
@@ -303,7 +303,7 @@ export function TimesheetView() {
             <Seg value={scope} onChange={chooseScope} label="Period" options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }, { value: "year", label: "Year" }]} />
             <span className="mx-1 hidden h-6 w-px bg-ink-100 sm:block" aria-hidden />
             <button type="button" className="btn btn-secondary btn-icon" aria-label={`Previous ${scope}`} onClick={() => setAnchor((a) => shift(scope, a, -1))}><ChevronLeft className="h-4 w-4" /></button>
-            <button type="button" className="btn btn-secondary" onClick={() => setAnchor(startOfDay(new Date()))} disabled={isCurrent}>{scope === "day" ? "Today" : `This ${scope}`}</button>
+            <button type="button" className="btn btn-secondary" onClick={() => setAnchor(startOfDay(zonedNow()))} disabled={isCurrent}>{scope === "day" ? "Today" : `This ${scope}`}</button>
             <button type="button" className="btn btn-secondary btn-icon" aria-label={`Next ${scope}`} onClick={() => setAnchor((a) => shift(scope, a, 1))} disabled={dayKey(shift(scope, from, 1)) > todayKey}><ChevronRight className="h-4 w-4" /></button>
           </div>
         }
@@ -556,15 +556,15 @@ function CellDialog({
   if (!cell) return null;
   const date = new Date(cell.key + "T00:00:00");
   const total = entries.reduce((a, e) => a + e.durationSeconds, 0);
-  const isToday = cell.key === dayKey(new Date());
+  const isToday = cell.key === dayKey(zonedNow());
 
   /** Start the new block right after the last entry of that day, or at 09:00; never end in the future. */
   const slot = (seconds: number) => {
-    const lastEnd = dayEntries.reduce<Date | null>((acc, e) => (e.endTime && (!acc || new Date(e.endTime) > acc) ? new Date(e.endTime) : acc), null);
+    const lastEnd = dayEntries.reduce<Date | null>((acc, e) => (e.endTime && (!acc || toZoned(e.endTime) > acc) ? toZoned(e.endTime) : acc), null);
     let start = lastEnd && dayKey(lastEnd) === cell.key ? lastEnd : combineDateTime(cell.key, { h: 9, m: 0 });
     let end = new Date(start.getTime() + seconds * 1000);
-    if (isToday && end > new Date()) {
-      end = new Date(Math.floor(Date.now() / 60000) * 60000);
+    if (isToday && end > zonedNow()) {
+      end = toZoned(Math.floor(Date.now() / 60000) * 60000);
       start = new Date(end.getTime() - seconds * 1000);
     }
     return { start, end };
@@ -587,7 +587,7 @@ function CellDialog({
     try {
       await api("/api/time-entries", {
         method: "POST",
-        json: { description, projectId: cell.projectId === NONE ? null : cell.projectId, startTime: start.toISOString(), endTime: end.toISOString(), ...(forUserId ? { userId: forUserId } : {}) },
+        json: { description, projectId: cell.projectId === NONE ? null : cell.projectId, startTime: toISO(start), endTime: toISO(end), ...(forUserId ? { userId: forUserId } : {}) },
       });
       setDuration("");
       setDescription("");

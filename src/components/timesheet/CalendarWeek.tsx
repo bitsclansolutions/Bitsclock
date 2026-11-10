@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EntryDTO } from "@/lib/entries";
-import { dayKey, fmtHours, fmtTime, hourLabel } from "@/lib/time";
+import { dayKey, fmtHours, fmtTime, hourLabel, toZoned, zonedNow } from "@/lib/time";
 import { cx } from "@/components/ui";
 
 export const HOUR_PX = 56;
@@ -22,8 +22,8 @@ const minutesOf = (d: Date) => d.getHours() * 60 + d.getMinutes() + d.getSeconds
 function blocksFor(entries: EntryDTO[], days: CalendarDay[], now: Date) {
   const byDay = new Map<string, Block[]>(days.map((d) => [d.key, []]));
   for (const e of entries) {
-    const start = new Date(e.startTime);
-    const end = e.endTime ? new Date(e.endTime) : now;
+    const start = toZoned(e.startTime);
+    const end = e.endTime ? toZoned(e.endTime) : now;
     if (end <= start) continue;
     let cursor = start;
     while (cursor < end) {
@@ -60,9 +60,9 @@ export function CalendarWeek({
   onEntry: (e: EntryDTO) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
-  const [now, setNow] = useState(() => new Date());
+  const [now, setNow] = useState(() => zonedNow());
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 30_000);
+    const t = setInterval(() => setNow(zonedNow()), 30_000);
     return () => clearInterval(t);
   }, []);
   // Open on the working day, not at midnight: when the calendar first shows, scroll the page
@@ -72,7 +72,7 @@ export function CalendarWeek({
     const el = scroller.current;
     const page = el?.closest("main");
     if (!el || !page) return;
-    const firstStart = Math.min(24 * 60, ...entries.map((e) => minutesOf(new Date(e.startTime))));
+    const firstStart = Math.min(24 * 60, ...entries.map((e) => minutesOf(toZoned(e.startTime))));
     const target = Math.max(0, Math.min(firstStart, 8 * 60) - 30);
     const gridTop = el.getBoundingClientRect().top - page.getBoundingClientRect().top + page.scrollTop;
     // Leave room above for the sticky day headers.
@@ -196,7 +196,7 @@ export function CalendarWeek({
                       ev.stopPropagation();
                       onEntry(b.entry);
                     }}
-                    title={`${b.entry.description || b.entry.project?.name || "Entry"} · ${fmtTime(b.entry.startTime)} – ${b.entry.endTime ? fmtTime(b.entry.endTime) : "now"} · ${fmtHours(b.entry.running ? (now.getTime() - new Date(b.entry.startTime).getTime()) / 1000 : b.entry.durationSeconds)}`}
+                    title={`${b.entry.description || b.entry.project?.name || "Entry"} · ${fmtTime(b.entry.startTime)} – ${b.entry.endTime ? fmtTime(b.entry.endTime) : "now"} · ${fmtHours(b.entry.running ? (now.getTime() - toZoned(b.entry.startTime).getTime()) / 1000 : b.entry.durationSeconds)}`}
                     className={cx(
                       "absolute left-1 right-1 overflow-hidden rounded-lg border-l-[3px] px-2 text-left shadow-sm transition-[filter] hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-600",
                       short ? "py-0.5" : "py-1",

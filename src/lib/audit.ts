@@ -19,6 +19,7 @@ export type AuditAction =
   | "member_request.approve"
   | "member_request.reject"
   | "workspace.lock_date"
+  | "workspace.time_zone"
   | "admin.recover";
 
 export type AuditEntry = {

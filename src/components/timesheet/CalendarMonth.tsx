@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import type { TimesheetCell, TimesheetProject } from "@/app/api/timesheet/route";
-import { addDays, dayKey, fmtHours, startOfWeek } from "@/lib/time";
+import { addDays, dayKey, fmtHours, startOfWeek, zonedNow } from "@/lib/time";
 import { cx } from "@/components/ui";
 
 const NONE = "__none";
@@ -19,7 +19,7 @@ export function CalendarMonth({
   projects: TimesheetProject[];
   onDay: (date: Date) => void;
 }) {
-  const todayKey = dayKey(new Date());
+  const todayKey = dayKey(zonedNow());
   const month = monthStart.getMonth();
   const weeks = useMemo(() => {
     const first = startOfWeek(monthStart);

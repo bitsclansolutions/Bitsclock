@@ -10,7 +10,7 @@ import { useApi } from "@/lib/useApi";
 import type { ProjectDTO } from "@/app/api/projects/route";
 import type { MemberDTO } from "@/app/api/users/route";
 import type { ReportData, BillableFilter } from "@/lib/reports";
-import { PERIODS, daysInRange, fmtHours, fmtTime, periodRange, type PeriodKey } from "@/lib/time";
+import { PERIODS, daysInRange, fmtHours, fmtTime, periodRange, toZoned, type PeriodKey } from "@/lib/time";
 import { Avatar, EmptyState, Kpi, LoadError, PageHeader, ProjectDot, Seg, Skeleton, cx } from "@/components/ui";
 import { Select } from "@/components/Select";
 import { exportReportPdf } from "@/lib/report-pdf";
@@ -292,7 +292,7 @@ export function ReportsView() {
                     <tbody>
                       {pageEntries.map((e) => (
                         <tr key={e.id}>
-                          <td className="whitespace-nowrap text-ink-700"><span className="inline-flex items-center gap-1.5"><CalendarDays className="h-3.5 w-3.5 text-ink-400" />{new Date(e.startTime).toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" })}</span></td>
+                          <td className="whitespace-nowrap text-ink-700"><span className="inline-flex items-center gap-1.5"><CalendarDays className="h-3.5 w-3.5 text-ink-400" />{toZoned(e.startTime).toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" })}</span></td>
                           <td className="whitespace-nowrap">{e.user.name}</td>
                           <td className="whitespace-nowrap"><span className="inline-flex items-center gap-1.5"><ProjectDot color={e.project?.color} />{e.project?.name ?? "No project"}</span></td>
                           <td className="max-w-xs truncate">

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, errMsg, onMutation } from "./client";
+import { currentTimeZone } from "./time";
 
 /**
  * Stale-while-revalidate data hook for the app's GET endpoints.
@@ -159,7 +160,12 @@ export function useLiveUpdates() {
       busy = true;
       const started = Date.now();
       try {
-        const res = await api<{ token: string }>("/api/changes", { cache: "no-store", retry: false });
+        const res = await api<{ token: string; timeZone?: string }>("/api/changes", { cache: "no-store", retry: false });
+        // The Administrator changed the workspace time zone: every date on screen must be redrawn in it.
+        if (res.timeZone && res.timeZone !== currentTimeZone()) {
+          window.location.reload();
+          return;
+        }
         // Our own change already refreshed everything; just adopt the new token.
         const ownChange = lastLocalChangeAt >= checkedAt;
         if (token !== null && res.token !== token && !ownChange) invalidate("/api");

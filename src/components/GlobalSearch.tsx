@@ -11,7 +11,7 @@ import { useUser } from "@/context/UserContext";
 import { useApi } from "@/lib/useApi";
 import type { Permission } from "@/lib/permissions";
 import type { SearchDTO } from "@/lib/search";
-import { fmtHours } from "@/lib/time";
+import { fmtHours, toZoned } from "@/lib/time";
 import { Avatar, ProjectDot, cx } from "./ui";
 
 type Group = "Pages" | "Projects" | "Members" | "Entries" | "Roles";
@@ -119,7 +119,7 @@ export function GlobalSearch() {
         id: `e:${e.id}`,
         group: "Entries",
         title: e.description || e.project?.name || "No description",
-        hint: [who, e.project?.name ?? "No project", new Date(e.startTime).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }), fmtHours(e.durationSeconds)].filter(Boolean).join(" · "),
+        hint: [who, e.project?.name ?? "No project", toZoned(e.startTime).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }), fmtHours(e.durationSeconds)].filter(Boolean).join(" · "),
         href: can("time.track") ? `/tracker?q=${encodeURIComponent(e.description || e.project?.name || "")}` : "/timesheet",
         icon: <Clock3 className="h-4 w-4 text-ink-400" />,
         s: 0, // already newest first from the server

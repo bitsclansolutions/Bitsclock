@@ -11,7 +11,7 @@ import type { MemberDTO } from "@/app/api/users/route";
 import type { ReportResponse } from "@/app/api/reports/route";
 import type { BillableFilter, ReportData } from "@/lib/reports";
 import type { EntryDTO } from "@/lib/entries";
-import { PERIODS, dayKey, dayLabel, daysInRange, fmtHours, fmtTime, periodRange, type PeriodKey } from "@/lib/time";
+import { PERIODS, dayKey, dayLabel, daysInRange, fmtHours, fmtTime, periodRange, toZoned, type PeriodKey } from "@/lib/time";
 import { Avatar, EmptyState, LoadError, ProjectDot, Skeleton, cx } from "@/components/ui";
 import { Select } from "@/components/Select";
 
@@ -107,14 +107,14 @@ export function AnalyticsView() {
   const entries = useMemo(() => (report ? (focusMember ? report.entries.filter((e) => e.userId === focusMember) : report.entries) : []), [report, focusMember]);
   const weekday = useMemo(() => {
     const out = WEEKDAYS.map((label) => ({ label, hours: 0 }));
-    for (const e of entries) out[(new Date(e.startTime).getDay() + 6) % 7]!.hours += e.durationSeconds / 3600;
+    for (const e of entries) out[(toZoned(e.startTime).getDay() + 6) % 7]!.hours += e.durationSeconds / 3600;
     return out.map((r) => ({ ...r, hours: Math.round(r.hours * 10) / 10 }));
   }, [entries]);
   const hours = useMemo(() => {
     const out = Array.from({ length: 24 }, (_, h) => ({ label: `${String(h).padStart(2, "0")}`, hours: 0 }));
     for (const e of entries) {
       // Spread each entry across the hours it covers.
-      let t = new Date(e.startTime).getTime();
+      let t = toZoned(e.startTime).getTime();
       const end = t + e.durationSeconds * 1000;
       while (t < end) {
         const d = new Date(t);

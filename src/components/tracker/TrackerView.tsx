@@ -16,7 +16,7 @@ import { clearDraft, loadDraft, useDraft } from "@/lib/drafts";
 import type { EntryDTO } from "@/lib/entries";
 import type { ProjectDTO } from "@/app/api/projects/route";
 import type { MemberDTO } from "@/app/api/users/route";
-import { addDays, combineDateTime, dayKey, fmtClock, fmtHM, fmtHours, fmtTime, fmtTimeText, parseTimeText, startOfWeek } from "@/lib/time";
+import { addDays, combineDateTime, dayKey, fmtClock, fmtHM, fmtHours, fmtTime, fmtTimeText, parseTimeText, startOfWeek, toISO, toZoned, zonedNow } from "@/lib/time";
 import { EmptyState, Kpi, MiniBars, Seg, Skeleton, cx } from "@/components/ui";
 import { ProjectSelect } from "@/components/ProjectSelect";
 import { RowMenu } from "@/components/RowMenu";
@@ -37,7 +37,7 @@ const SCROLL_BATCH = 50;
  * fall before that in time zones east of UTC.
  */
 function windowRange(win: TrackerWindow) {
-  const today = new Date();
+  const today = zonedNow();
   const from = win === "all" ? "2000-01-02" : win === "year" ? `${today.getFullYear()}-01-01` : dayKey(addDays(today, -(Number(win) - 1)));
   return rangeToInstants(from, dayKey(today));
 }
@@ -77,8 +77,8 @@ function BillingToggle({ billable, canChange, title, onChange }: { billable: boo
 
 function dayLabel(key: string) {
   const d = new Date(key + "T00:00:00");
-  const today = dayKey(new Date());
-  const yesterday = dayKey(addDays(new Date(), -1));
+  const today = dayKey(zonedNow());
+  const yesterday = dayKey(addDays(zonedNow(), -1));
   const long = d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" });
   return key === today ? `Today · ${long}` : key === yesterday ? `Yesterday · ${long}` : long;
 }
@@ -99,9 +99,9 @@ export function TrackerView() {
   // Billable for the next entry: follows the chosen project's default until the chip is toggled.
   const [billable, setBillable] = useState(false);
   const [billableTouched, setBillableTouched] = useState(false);
-  const [mDate, setMDate] = useState(() => dayKey(new Date()));
-  const [mStart, setMStart] = useState(() => fmtTimeText(new Date(Date.now() - 3600_000)));
-  const [mEnd, setMEnd] = useState(() => fmtTimeText(new Date()));
+  const [mDate, setMDate] = useState(() => dayKey(zonedNow()));
+  const [mStart, setMStart] = useState(() => fmtTimeText(toZoned(Date.now() - 3600_000)));
+  const [mEnd, setMEnd] = useState(() => fmtTimeText(zonedNow()));
   const [busy, setBusy] = useState(false);
   // What's typed in the entry bar survives an expired session (R-038).
   useDraft("tracker:bar", { description, projectId }, !timer.active && (description !== "" || projectId !== ""));
@@ -195,7 +195,7 @@ export function TrackerView() {
 
   // Today / this week figures come from their own query, so paging and filters never skew them.
   const statsUrl = useMemo(() => {
-    const now = new Date();
+    const now = zonedNow();
     return `/api/time-entries${qs({ ...rangeToInstants(dayKey(startOfWeek(now)), dayKey(now)), tz: tzName(), userId: "me", finished: "1", limit: 500 })}`;
   }, []);
   const statsQ = useApi<EntriesPage>(statsUrl);
@@ -263,8 +263,8 @@ export function TrackerView() {
   }, [visible]);
 
   const stats = useMemo(() => {
-    const today = dayKey(new Date());
-    const weekStart = startOfWeek(new Date());
+    const today = dayKey(zonedNow());
+    const weekStart = startOfWeek(zonedNow());
     const weekKey = dayKey(weekStart);
     const perDay = Array(7).fill(0) as number[];
     let todayS = 0,
@@ -279,7 +279,7 @@ export function TrackerView() {
         weekS += e.durationSeconds;
         weekN++;
         if (e.billable) billS += e.durationSeconds;
-        const idx = Math.floor((new Date(e.startTime).getTime() - weekStart.getTime()) / 86400_000);
+        const idx = Math.floor((toZoned(e.startTime).getTime() - weekStart.getTime()) / 86400_000);
         if (idx >= 0 && idx < 7) perDay[idx] += e.durationSeconds;
       }
     }
@@ -335,7 +335,7 @@ export function TrackerView() {
     try {
       const { entry } = await api<{ entry: EntryDTO }>("/api/time-entries", {
         method: "POST",
-        json: { description: description.trim(), projectId: projectId || null, ...billableField, startTime: manualTimes.a.toISOString(), endTime: manualTimes.b.toISOString() },
+        json: { description: description.trim(), projectId: projectId || null, ...billableField, startTime: toISO(manualTimes.a), endTime: toISO(manualTimes.b) },
       });
       setDescription("");
       clearDraft("tracker:bar");
@@ -480,7 +480,7 @@ export function TrackerView() {
                 <input aria-label="Start time" inputMode="numeric" className="field tabular w-[5.25rem] text-center" value={mStart} onChange={(e) => setMStart(e.target.value)} onBlur={(e) => normalizeTime(e.target.value, setMStart)} placeholder="09:00" />
                 <span className="text-ink-400">to</span>
                 <input aria-label="End time" inputMode="numeric" className="field tabular w-[5.25rem] text-center" value={mEnd} onChange={(e) => setMEnd(e.target.value)} onBlur={(e) => normalizeTime(e.target.value, setMEnd)} placeholder="10:30" />
-                <input aria-label="Date" type="date" className="field w-[10rem]" value={mDate} max={dayKey(new Date())} onChange={(e) => setMDate(e.target.value)} />
+                <input aria-label="Date" type="date" className="field w-[10rem]" value={mDate} max={dayKey(zonedNow())} onChange={(e) => setMDate(e.target.value)} />
                 <span className={cx("tabular w-[4.5rem] text-center text-sm font-extrabold", manualTimes ? "text-ink-900" : "text-[#b5322b]")}>{manualTimes ? fmtHM(manualTimes.seconds) : "—"}</span>
               </div>
             )}

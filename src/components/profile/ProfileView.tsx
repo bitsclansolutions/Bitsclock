@@ -12,7 +12,7 @@ import { changePasswordSchema, clientCheck, profileSchema } from "@/lib/validati
 import { LIMITS } from "@/lib/sanitize";
 import type { DashboardDTO } from "@/app/api/dashboard/route";
 import type { SessionDTO } from "@/lib/sessions";
-import { dayKey, fmtHours, startOfDay, startOfMonth, startOfWeek } from "@/lib/time";
+import { dayKey, fmtHours, startOfDay, startOfMonth, startOfWeek, toISO, toZoned, zonedNow } from "@/lib/time";
 import { Avatar, ErrorBanner, Field, Kpi, PasswordInput, Skeleton, cx } from "@/components/ui";
 
 /** Short device label from a user agent string. */
@@ -56,9 +56,9 @@ export function ProfileView() {
   const [pwdError, setPwdError] = useState("");
 
   // Stats (same endpoint as the dashboard, so it is usually already cached)
-  const now = new Date();
+  const now = zonedNow();
   const statsQ = useApi<DashboardDTO>(
-    `/api/dashboard${qs({ tz: tzName(), dayStart: startOfDay(now).toISOString(), weekStart: startOfWeek(now).toISOString(), monthStart: startOfMonth(now).toISOString() })}`,
+    `/api/dashboard${qs({ tz: tzName(), dayStart: toISO(startOfDay(now)), weekStart: toISO(startOfWeek(now)), monthStart: toISO(startOfMonth(now)) })}`,
     { ttlMs: 20_000 },
   );
   const me = statsQ.data?.me;
@@ -247,7 +247,7 @@ export function ProfileView() {
                       {s.remember && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-500"><ShieldCheck className="h-3 w-3" /> Remembered</span>}
                     </p>
                     <p className="text-xs text-ink-500">
-                      Active {relative(s.lastUsedAt)}{s.ip ? ` · ${s.ip}` : ""} · expires {new Date(s.expiresAt).toLocaleDateString([], { month: "short", day: "numeric" })}
+                      Active {relative(s.lastUsedAt)}{s.ip ? ` · ${s.ip}` : ""} · expires {toZoned(s.expiresAt).toLocaleDateString([], { month: "short", day: "numeric" })}
                     </p>
                   </div>
                   {!s.current && (

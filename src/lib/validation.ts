@@ -165,14 +165,29 @@ export const memberRequestDecisionSchema = z
   })
   .strict();
 
-/** The Administrator sets or clears the invoicing lock date (D-005). */
+/** The Administrator sets or clears the invoicing lock date (D-005) and/or the workspace time zone (D-012). */
 export const workspaceUpdateSchema = z
   .object({
     lockDate: instantField
       .refine((v) => Date.parse(v) <= Date.now() + 60_000, "The lock date can't be in the future.")
-      .nullable(),
+      .nullable()
+      .optional(),
+    timeZone: z
+      .string()
+      .trim()
+      .max(64)
+      .refine((tz) => {
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: tz });
+          return /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/.test(tz);
+        } catch {
+          return false;
+        }
+      }, "Pick a valid time zone.")
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => v.lockDate !== undefined || v.timeZone !== undefined, "Nothing to change.");
 
 // ---- roles ------------------------------------------------------------------
 

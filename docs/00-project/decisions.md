@@ -167,6 +167,18 @@
   - Restore (Administrator) puts the email back if still free (409 otherwise) and returns the member deactivated. Audited `user.restore`.
 - Revisit when: a privacy erasure request arrives (then add option B as a separate "erase personal data" action).
 
+## D-012: One workspace time zone for everyone (default PKT)
+- Date: 2026-11-10
+- Status: accepted (owner asked for PKT and an Administrator setting; chose "everywhere" over "totals and reports only")
+- Type: 1 (data model, every date in the app).
+- Context: times were shown and days grouped in each viewer's computer zone, so the same entry could fall on different days for different people.
+- Decision:
+  - `bc_workspace_settings.timeZone` (IANA name, default `Asia/Karachi`; migration `20261110000000_workspace_time_zone`, additive). The Administrator changes it on Settings → Workspace; audited `workspace.time_zone`.
+  - Entries are still stored as exact UTC instants; nothing is rewritten when the zone changes.
+  - Server: every report, timesheet, dashboard and export groups days in the workspace zone; the `tz` the browser sends is ignored. Lock-date messages print the day in that zone.
+  - Browser: `lib/time.ts` converts at the edges (`toZoned` for instants from the server, `toISO`/`fromZoned` before sending, `zonedNow` for "now"), so all calendar maths runs in the workspace zone whatever the computer is set to. The zone is set by `UserProvider` before any page renders; an open app reloads itself when the zone changes (via `/api/changes`).
+- Revisit when: a team spans zones and wants per-person display (would need a per-user override on top of this).
+
 ## Implementation notes — 2026-11-05 fix run
 Choices made while implementing the decisions above, for the owner to veto. None changes a decision's substance.
 - **Order (D-006/D-007/D-008):** the Prisma 7 upgrade and migration baseline were done right after the test harness instead of last. D-001, D-003, D-005 and D-006 all change the schema, and D-006's CHECK and partial unique index can't be expressed with `db push`, so migrations had to exist first. D-007's condition (tests before the upgrade) was met: 42 tests covering raw SQL, timezone buckets and advisory locks passed on Prisma 6 first, then on 7.

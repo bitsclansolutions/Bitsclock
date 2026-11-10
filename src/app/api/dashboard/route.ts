@@ -2,7 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { handler, jsonCached, parseQuery, requireUser } from "@/lib/api";
 import { hasPermission, type SessionUser } from "@/lib/auth";
 import { closeOverdueTimers, entryInclude, getActiveEntry, serializeEntry, type EntryDTO } from "@/lib/entries";
-import { buildReport, safeZone, type ReportData } from "@/lib/reports";
+import { buildReport, type ReportData } from "@/lib/reports";
+import { workspaceTimeZone } from "@/lib/workspace";
 import { cached, entryTags, paramsKey } from "@/lib/server-cache";
 import { dashboardQuerySchema } from "@/lib/validation";
 
@@ -41,14 +42,14 @@ export const GET = handler(async (req) => {
   // Role edits change what the team section shows, so they invalidate it too (R-066).
   // Per-user tag unless the team section is shown (R-030): another member's edit only clears team views.
   const entryTag = hasPermission(me, "dashboard.team") ? entryTags(undefined) : entryTags([me.id]);
-  const data = await cached(`dashboard:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 20_000, tags: [...entryTag, "projects", "users", "roles"] }, () => loadDashboard(me, q));
+  const data = await cached(`dashboard:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 20_000, tags: [...entryTag, "projects", "users", "roles", "settings"] }, () => loadDashboard(me, q));
   return jsonCached(req, data, { maxAge: 10 });
 });
 
 const MAX_RANGE_MS = 400 * 86400_000;
 
 async function loadDashboard(me: SessionUser, q: { tz?: string; dayStart?: string; weekStart?: string; monthStart?: string }): Promise<DashboardDTO> {
-  const tz = safeZone(q.tz);
+  const tz = await workspaceTimeZone(); // D-012: always the workspace zone
   const now = new Date();
   // Client-chosen bounds, clamped so a crafted request can't make the dashboard scan years (R-066).
   const bound = (iso: string | undefined, fallbackMs: number) => {

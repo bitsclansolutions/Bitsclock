@@ -1,5 +1,7 @@
 "use client";
 
+import { currentTimeZone, fromZoned } from "./time";
+
 /** Recent API round-trip times (ms), newest last. Used for the slow-connection alert. */
 const latencySamples: number[] = [];
 const latencyListeners = new Set<(samples: number[]) => void>();
@@ -262,18 +264,15 @@ export async function downloadCsv(path: string, fallbackName: string) {
   return rows;
 }
 
+/** The zone reports and totals are computed in: the workspace zone (D-012). */
 export function tzName() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  } catch {
-    return "UTC";
-  }
+  return currentTimeZone();
 }
 
-/** Local day-key range → ISO instants covering [from 00:00, to 23:59:59.999]. */
+/** Day-key range in the workspace zone → ISO instants covering [from 00:00, to 23:59:59.999]. */
 export function rangeToInstants(from: string, to: string) {
-  const a = new Date(from + "T00:00:00");
-  const b = new Date(to + "T23:59:59.999");
+  const a = fromZoned(new Date(from + "T00:00:00"));
+  const b = fromZoned(new Date(to + "T23:59:59.999"));
   return { from: a.toISOString(), to: b.toISOString() };
 }
 

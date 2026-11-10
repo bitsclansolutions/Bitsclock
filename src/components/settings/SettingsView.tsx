@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Bell, Lock, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useUser } from "@/context/UserContext";
 import { useToast } from "@/context/ToastContext";
 import { api, errMsg } from "@/lib/client";
 import { invalidate, useApi } from "@/lib/useApi";
-import { dayKey } from "@/lib/time";
+import { currentTimeZone, dayKey, toISO, zonedNow, zoneOffsetMs } from "@/lib/time";
 import type { WorkspaceDTO } from "@/lib/workspace";
 import { PERMISSION_GROUPS } from "@/lib/permissions";
 import { DEFAULT_PREFS, readPrefs, writePrefs, TRACKER_PAGE_SIZES, TRACKER_WINDOWS, type Prefs } from "@/lib/prefs";
@@ -19,8 +19,72 @@ type Section = "preferences" | "permissions" | "workspace";
 const SECTIONS: { id: Section; label: string; icon: React.ReactNode; blurb: string; adminOnly?: boolean }[] = [
   { id: "preferences", label: "Preferences", icon: <SlidersHorizontal className="h-4 w-4" />, blurb: "Tracker defaults and display" },
   { id: "permissions", label: "Permissions", icon: <ShieldCheck className="h-4 w-4" />, blurb: "What your role allows" },
-  { id: "workspace", label: "Workspace", icon: <Lock className="h-4 w-4" />, blurb: "Lock invoiced time", adminOnly: true },
+  { id: "workspace", label: "Workspace", icon: <Lock className="h-4 w-4" />, blurb: "Time zone and invoiced time", adminOnly: true },
 ];
+
+/** "GMT+05:00"-style offset of a zone right now, for the picker's hints. */
+function offsetLabel(tz: string) {
+  const mins = Math.round(zoneOffsetMs(Date.now(), tz) / 60_000);
+  const sign = mins < 0 ? "−" : "+";
+  const a = Math.abs(mins);
+  return `UTC${sign}${String(Math.floor(a / 60)).padStart(2, "0")}:${String(a % 60).padStart(2, "0")}`;
+}
+
+/** Every IANA zone the browser knows, sorted by offset then name. */
+function zoneOptions(current: string) {
+  let zones: string[] = [];
+  try {
+    zones = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
+  } catch {
+    /* older browsers */
+  }
+  if (!zones.includes(current)) zones = [current, ...zones];
+  if (!zones.includes("UTC")) zones.push("UTC");
+  return zones
+    .map((z) => ({ z, off: zoneOffsetMs(Date.now(), z) }))
+    .sort((a, b) => a.off - b.off || a.z.localeCompare(b.z))
+    .map(({ z }) => ({ value: z, label: z.replace(/_/g, " "), hint: offsetLabel(z) }));
+}
+
+/**
+ * The workspace time zone (D-012), Administrator only: every member sees and enters time
+ * in it, and every report, total and day boundary uses it.
+ */
+function TimeZoneSection() {
+  const toast = useToast();
+  const q = useApi<WorkspaceDTO>("/api/workspace", { ttlMs: 30_000 });
+  const current = q.data?.timeZone ?? currentTimeZone();
+  const [draft, setDraft] = useState<string | null>(null);
+  const value = draft ?? current;
+  const [busy, setBusy] = useState(false);
+  const options = useMemo(() => zoneOptions(current), [current]);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api("/api/workspace", { method: "PATCH", json: { timeZone: value } });
+      toast.success("Time zone saved", `Everyone now sees and logs time in ${value.replace(/_/g, " ")}.`);
+      // Every date on screen has to be redrawn in the new zone.
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (e) {
+      toast.error("Couldn't save the time zone", errMsg(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="card p-6" aria-label="Time zone">
+      <h2 className="text-lg font-extrabold text-ink-900">Time zone</h2>
+      <p className="text-sm text-ink-500">Everyone sees and enters time in this zone, whatever their computer is set to. Days, weeks and months in every report and total start at midnight in this zone. Saved entries keep their exact moment; only how they are shown changes.</p>
+      <div className="mt-5 flex flex-wrap items-end gap-3">
+        <div>
+          <p className="label" aria-hidden>Workspace time zone</p>
+          <Select label="Workspace time zone" value={value} onChange={setDraft} options={options} className="w-72" menuWidth={320} searchPlaceholder="Search, e.g. Karachi" disabled={q.loading && !q.data} />
+        </div>
+        <button type="button" className="btn btn-primary" disabled={busy || value === current} onClick={save}>{busy ? "Saving…" : "Save time zone"}</button>
+      </div>
+      <p className="mt-3 text-xs text-ink-500">Currently {current.replace(/_/g, " ")} ({offsetLabel(current)}).</p>
+    </section>
+  );
+}
 
 /**
  * The invoicing lock date (D-005), Administrator only. Entries that start before it can
@@ -36,8 +100,8 @@ function WorkspaceSection() {
   const save = async (next: string) => {
     setBusy(true);
     try {
-      // Midnight at the start of the chosen day, in this browser's time zone.
-      const lockDate = next ? new Date(next + "T00:00:00").toISOString() : null;
+      // Midnight at the start of the chosen day, in the workspace time zone.
+      const lockDate = next ? toISO(new Date(next + "T00:00:00")) : null;
       await api("/api/workspace", { method: "PATCH", json: { lockDate } });
       invalidate("/api/workspace");
       setDraft(null);
@@ -55,7 +119,7 @@ function WorkspaceSection() {
       <div className="mt-5 flex flex-wrap items-end gap-3">
         <div>
           <label className="label" htmlFor="lock-date">Locked before</label>
-          <input id="lock-date" type="date" className="field w-[11rem]" value={value} max={dayKey(new Date())} onChange={(e) => setDraft(e.target.value)} disabled={q.loading && !q.data} />
+          <input id="lock-date" type="date" className="field w-[11rem]" value={value} max={dayKey(zonedNow())} onChange={(e) => setDraft(e.target.value)} disabled={q.loading && !q.data} />
         </div>
         <button type="button" className="btn btn-primary" disabled={busy || !value || value === current} onClick={() => save(value)}>{busy ? "Saving…" : "Save lock date"}</button>
         {current && <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => save("")}>Remove lock</button>}
@@ -134,7 +198,12 @@ export function SettingsView() {
           </section>
         )}
 
-        {section === "workspace" && user.isAdmin && <WorkspaceSection />}
+        {section === "workspace" && user.isAdmin && (
+          <>
+            <TimeZoneSection />
+            <WorkspaceSection />
+          </>
+        )}
 
         {section === "permissions" && (
           <section className="card p-6" aria-label="Permissions">

@@ -5,7 +5,7 @@ import { Check, DollarSign, X } from "lucide-react";
 import { api, errMsg } from "@/lib/client";
 import { clientCheck, entryUpdateSchema } from "@/lib/validation";
 import type { EntryDTO } from "@/lib/entries";
-import { combineDateTime, dayKey, fmtHours, fmtTimeText, parseTimeText } from "@/lib/time";
+import { combineDateTime, dayKey, fmtHours, fmtTimeText, parseTimeText, toISO } from "@/lib/time";
 import { Seg, cx } from "@/components/ui";
 import { ProjectSelect, type ProjectLite } from "@/components/ProjectSelect";
 import { useUser } from "@/context/UserContext";
@@ -77,8 +77,8 @@ export function InlineEntryEditor({ entry, projects, onSaved, onCancel }: { entr
       description,
       projectId: projectId || null,
       ...(canOverrideBillable ? { billable } : {}),
-      startTime: times.startAt.toISOString(),
-      endTime: times.endAt.toISOString(),
+      startTime: toISO(times.startAt),
+      endTime: toISO(times.endAt),
     };
     const problem = clientCheck(entryUpdateSchema, body);
     if (problem) {

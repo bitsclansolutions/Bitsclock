@@ -9,7 +9,7 @@ import { useTimer } from "@/context/TimerContext";
 import { qs, tzName } from "@/lib/client";
 import { useApi } from "@/lib/useApi";
 import type { DashboardDTO } from "@/app/api/dashboard/route";
-import { addDays, dayKey, fmtClock, fmtHours, fmtTime, startOfDay, startOfMonth, startOfWeek } from "@/lib/time";
+import { addDays, dayKey, fmtClock, fmtHours, fmtTime, startOfDay, startOfMonth, startOfWeek, toISO, toZoned, zonedNow } from "@/lib/time";
 import { Avatar, EmptyState, Kpi, LoadError, MiniBars, MiniLine, Progress, ProjectDot, Skeleton } from "@/components/ui";
 
 function LiveElapsed({ since }: { since: string }) {
@@ -22,7 +22,7 @@ function LiveElapsed({ since }: { since: string }) {
 }
 
 function weekSeries(byDay: { key: string; seconds: number; billableSeconds: number }[]) {
-  const start = startOfWeek(new Date());
+  const start = startOfWeek(zonedNow());
   const map = new Map(byDay.map((d) => [d.key, d]));
   return Array.from({ length: 7 }, (_, i) => {
     const d = addDays(start, i);
@@ -41,14 +41,14 @@ export function DashboardView() {
   const { user, can } = useUser();
   const timer = useTimer();
   const url = useMemo(() => {
-    const now = new Date();
-    return `/api/dashboard${qs({ tz: tzName(), dayStart: startOfDay(now).toISOString(), weekStart: startOfWeek(now).toISOString(), monthStart: startOfMonth(now).toISOString() })}`;
+    const now = zonedNow();
+    return `/api/dashboard${qs({ tz: tzName(), dayStart: toISO(startOfDay(now)), weekStart: toISO(startOfWeek(now)), monthStart: toISO(startOfMonth(now)) })}`;
   }, []);
   const { data, error, refresh } = useApi<DashboardDTO>(url, { ttlMs: 20_000 });
 
   const mySeries = useMemo(() => (data ? weekSeries(data.me.week) : []), [data]);
   const teamSeries = useMemo(() => (data?.team ? weekSeries(data.team.week) : []), [data]);
-  const todaySeconds = (data?.me.todaySeconds ?? 0) + (timer.active && dayKey(timer.active.startTime) === dayKey(new Date()) ? timer.elapsed : 0);
+  const todaySeconds = (data?.me.todaySeconds ?? 0) + (timer.active && dayKey(timer.active.startTime) === dayKey(zonedNow()) ? timer.elapsed : 0);
 
   if (error && !data) return <LoadError what="your dashboard" message={error} onRetry={refresh} />;
 
@@ -150,7 +150,7 @@ export function DashboardView() {
                   <span className="h-9 w-1 rounded-full" style={{ background: e.project?.color ?? "#ccd0d6" }} aria-hidden="true" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-bold text-ink-900">{e.description || e.project?.name || "No description"}</p>
-                    <p className="text-xs text-ink-500">{e.project?.name ?? "No project"} · {new Date(e.startTime).toLocaleDateString([], { month: "short", day: "numeric" })}, {fmtTime(e.startTime)}</p>
+                    <p className="text-xs text-ink-500">{e.project?.name ?? "No project"} · {toZoned(e.startTime).toLocaleDateString([], { month: "short", day: "numeric" })}, {fmtTime(e.startTime)}</p>
                   </div>
                   <span className="tabular text-sm font-extrabold text-ink-900">{fmtHours(e.durationSeconds)}</span>
                 </li>

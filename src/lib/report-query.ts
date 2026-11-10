@@ -1,6 +1,6 @@
 import { ApiError, parseQuery } from "./api";
 import { hasPermission, type SessionUser } from "./auth";
-import { safeZone } from "./reports";
+import { workspaceTimeZone } from "./workspace";
 import type { BillableFilter, EntryFilter } from "./entry-filter";
 import { reportQuerySchema } from "./validation";
 
@@ -21,12 +21,12 @@ export type ParsedReportQuery = EntryFilter & {
  * `maxDays` caps the range (reports aggregate the whole range in one go). The paginated
  * entry list passes `null`: it never reads more than one page, so "All time" is safe there.
  */
-export function parseReportQuery(
+export async function parseReportQuery(
   url: URL,
   user: SessionUser,
   viewAllPermission: "reports.view_all" | "time.view_all",
   opts: { maxDays?: number | null } = {},
-): ParsedReportQuery {
+): Promise<ParsedReportQuery> {
   const q = parseQuery(url, reportQuerySchema);
   const from = new Date(q.from);
   const to = new Date(q.to);
@@ -49,7 +49,8 @@ export function parseReportQuery(
   return {
     from,
     to,
-    tz: safeZone(q.tz),
+    // Always the workspace zone (D-012), whatever the browser sends.
+    tz: await workspaceTimeZone(),
     userIds,
     projectId: q.projectId,
     billable,

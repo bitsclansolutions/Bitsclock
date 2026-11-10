@@ -28,8 +28,8 @@ export type TimesheetResponse = { cells: TimesheetCell[]; projects: TimesheetPro
 export const GET = handler(async (req) => {
   const me = await requireAnyPermission("time.track", "time.view_all");
   const url = new URL(req.url);
-  const f = parseReportQuery(url, me, "time.view_all");
-  const data = await cached<TimesheetResponse>(`timesheet:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 15_000, tags: [...entryTags(f.userIds), "projects", "roles"] }, async () => {
+  const f = await parseReportQuery(url, me, "time.view_all");
+  const data = await cached<TimesheetResponse>(`timesheet:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 15_000, tags: [...entryTags(f.userIds), "projects", "roles", "settings"] }, async () => {
     if (f.userIds && f.userIds.length === 0) return { cells: [], projects: [] };
     const rows = await prisma.$queryRaw<{ projectId: string | null; key: string; seconds: number; billableSeconds: number; count: number }[]>(Prisma.sql`
       SELECT e."projectId",

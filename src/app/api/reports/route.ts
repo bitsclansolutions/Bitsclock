@@ -13,8 +13,8 @@ export type ReportResponse = {
 export const GET = handler(async (req) => {
   const me = await requireAnyPermission("reports.view_own", "reports.view_all");
   const url = new URL(req.url);
-  const f = parseReportQuery(url, me, "reports.view_all");
-  const data = await cached<ReportResponse>(`report:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 30_000, tags: [...entryTags(f.userIds), "projects", "users", "roles"] }, async () => {
+  const f = await parseReportQuery(url, me, "reports.view_all");
+  const data = await cached<ReportResponse>(`report:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 30_000, tags: [...entryTags(f.userIds), "projects", "users", "roles", "settings"] }, async () => {
     const report = await buildReport(f, { withEntries: f.kind === "detailed" });
     if (!f.compare) return { report, previous: null };
     const span = f.to.getTime() - f.from.getTime();

@@ -1,7 +1,7 @@
 import { prisma, type Tx } from "./prisma";
 import { ApiError } from "./api";
 import { hasPermission, type SessionUser } from "./auth";
-import { assertUnlocked, lockDateFor } from "./workspace";
+import { assertUnlocked, lockDateFor, lockDayLabel } from "./workspace";
 import { entryWhere, type EntryFilter } from "./entry-filter";
 
 type Db = Tx;
@@ -285,6 +285,7 @@ export const MAX_BULK_ROWS = 500;
 export async function createManualEntries(actor: Actor, userId: string, items: ManualEntryInput[], atomic: boolean) {
   if (items.length > MAX_BULK_ROWS) throw new ApiError(400, `At most ${MAX_BULK_ROWS} entries per request.`);
   const lockDate = await lockDateFor(actor);
+  const lockLabel = lockDate ? await lockDayLabel(lockDate) : "";
   return withUserLock(userId, async (db) => {
     const errors: { index: number; message: string; status: number }[] = [];
     const fail = (index: number, e: unknown) => {
@@ -309,7 +310,7 @@ export async function createManualEntries(actor: Actor, userId: string, items: M
         const end = parseWhen(item.endTime, "End time");
         assertRange(start, end);
         if (lockDate && start < lockDate) {
-          throw new ApiError(403, `Time before ${lockDate.toISOString().slice(0, 10)} is locked because it has been invoiced. Ask the Administrator if it needs a change.`);
+          throw new ApiError(403, `Time before ${lockLabel} is locked because it has been invoiced. Ask the Administrator if it needs a change.`);
         }
         const project = item.projectId ? checkProjectUsable(projects.get(item.projectId) ?? null, userId) : null;
         rows.push({ index, start, end, project, billable: resolveBillable(actor, item.billable, project?.billable ?? false), description: item.description });

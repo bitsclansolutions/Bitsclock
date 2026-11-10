@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "@/lib/client";
 import { clientCheck, entryManualSchema, entryUpdateSchema } from "@/lib/validation";
 import type { EntryDTO } from "@/lib/entries";
-import { combineDateTime, dayKey, fmtHours, fmtTimeText, parseTimeText } from "@/lib/time";
+import { combineDateTime, dayKey, fmtHours, fmtTimeText, parseTimeText, toISO, zonedNow } from "@/lib/time";
 import { DollarSign } from "lucide-react";
 import { ErrorBanner, Field, Modal, Seg, cx } from "@/components/ui";
 import { ProjectSelect, type ProjectLite } from "@/components/ProjectSelect";
@@ -33,7 +33,7 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
   const [billable, setBillable] = useState(false);
   // Until the user flips the toggle, billable follows the chosen project's default.
   const [billableTouched, setBillableTouched] = useState(false);
-  const [date, setDate] = useState(dayKey(new Date()));
+  const [date, setDate] = useState(() => dayKey(zonedNow()));
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [busy, setBusy] = useState(false);
@@ -60,7 +60,7 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
       setStart(fmtTimeText(entry.startTime));
       setEnd(entry.endTime ? fmtTimeText(entry.endTime) : "");
     } else {
-      const now = new Date();
+      const now = zonedNow();
       setDescription(defaults?.description ?? "");
       setProjectId(defaults?.projectId ?? "");
       setDate(defaults?.date ?? dayKey(now));
@@ -108,9 +108,9 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
     // Build the exact payload and run the API's own schema on it before sending.
     // Without the override permission the project decides, so billable isn't sent at all.
     const billableField = canOverrideBillable ? { billable } : {};
-    const patchBody: Record<string, unknown> = { description, projectId: projectId || null, ...billableField, startTime: times.startAt.toISOString() };
-    if (!running && times.endAt) patchBody.endTime = times.endAt.toISOString();
-    const createBody = { description, projectId: projectId || null, ...billableField, startTime: times.startAt.toISOString(), endTime: times.endAt?.toISOString() ?? "", ...(forUserId ? { userId: forUserId } : {}) };
+    const patchBody: Record<string, unknown> = { description, projectId: projectId || null, ...billableField, startTime: toISO(times.startAt) };
+    if (!running && times.endAt) patchBody.endTime = toISO(times.endAt);
+    const createBody = { description, projectId: projectId || null, ...billableField, startTime: toISO(times.startAt), endTime: (times.endAt ? toISO(times.endAt) : ""), ...(forUserId ? { userId: forUserId } : {}) };
     const problem = editing && entry ? clientCheck(entryUpdateSchema, patchBody) : clientCheck(entryManualSchema, createBody);
     if (problem) {
       setError(problem);

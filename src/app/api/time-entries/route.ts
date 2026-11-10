@@ -13,7 +13,7 @@ import { entryManualSchema } from "@/lib/validation";
 export const GET = handler(async (req) => {
   const me = await requirePermission("time.track");
   const url = new URL(req.url);
-  const f = parseReportQuery(url, me, "time.view_all", { maxDays: null });
+  const f = await parseReportQuery(url, me, "time.view_all", { maxDays: null });
   const page = await cached(`entries:${me.id}:${paramsKey(url.searchParams)}`, { ttlMs: 15_000, tags: [...entryTags(f.userIds), "projects", "users", "roles"] }, () =>
     listEntries(f, { limit: f.limit, cursor: f.cursor, page: f.page }),
   );
