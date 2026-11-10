@@ -13,7 +13,7 @@ import { LIMITS } from "@/lib/sanitize";
 import type { DashboardDTO } from "@/app/api/dashboard/route";
 import type { SessionDTO } from "@/lib/sessions";
 import { dayKey, fmtHours, startOfDay, startOfMonth, startOfWeek } from "@/lib/time";
-import { Avatar, ErrorBanner, Field, Kpi, Skeleton, cx } from "@/components/ui";
+import { Avatar, ErrorBanner, Field, Kpi, PasswordInput, Skeleton, cx } from "@/components/ui";
 
 /** Short device label from a user agent string. */
 function describeDevice(ua: string | null) {
@@ -200,9 +200,9 @@ export function ProfileView() {
           </div>
           <form onSubmit={savePassword} className="mt-5 space-y-4" noValidate>
             <ErrorBanner message={pwdError} />
-            <Field label="Current password" htmlFor="pw-cur"><input id="pw-cur" type="password" autoComplete="current-password" className="field" value={current} onChange={(e) => setCurrent(e.target.value)} required maxLength={LIMITS.password} /></Field>
+            <Field label="Current password" htmlFor="pw-cur"><PasswordInput id="pw-cur" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required maxLength={LIMITS.password} /></Field>
             <Field label="New password" htmlFor="pw-new">
-              <input id="pw-new" type="password" autoComplete="new-password" className="field" value={next} onChange={(e) => setNext(e.target.value)} required minLength={8} maxLength={LIMITS.password} />
+              <PasswordInput id="pw-new" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} required minLength={8} maxLength={LIMITS.password} />
               {next && (
                 <div className="mt-2 flex items-center gap-2" aria-label="Password strength">
                   {[1, 2, 3, 4, 5].map((i) => (
@@ -212,7 +212,7 @@ export function ProfileView() {
                 </div>
               )}
             </Field>
-            <Field label="Confirm new password" htmlFor="pw-conf"><input id="pw-conf" type="password" autoComplete="new-password" className="field" value={confirmPwd} onChange={(e) => setConfirmPwd(e.target.value)} required minLength={8} maxLength={LIMITS.password} /></Field>
+            <Field label="Confirm new password" htmlFor="pw-conf"><PasswordInput id="pw-conf" autoComplete="new-password" value={confirmPwd} onChange={(e) => setConfirmPwd(e.target.value)} required minLength={8} maxLength={LIMITS.password} /></Field>
             <button type="submit" className="btn btn-primary" disabled={pwdBusy}>{pwdBusy ? "Saving…" : "Update password"}</button>
           </form>
         </section>

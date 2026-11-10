@@ -1,7 +1,7 @@
 "use client";
 
-import { cloneElement, isValidElement, useEffect, useId, useRef } from "react";
-import { Loader2, RotateCcw, X } from "lucide-react";
+import { cloneElement, isValidElement, useEffect, useId, useRef, useState } from "react";
+import { Eye, EyeOff, Loader2, RotateCcw, X } from "lucide-react";
 import { initials } from "@/lib/time";
 import { anyPopupOpen, initialFocus, useFocusTrap, useLatest } from "@/lib/focus";
 
@@ -263,6 +263,25 @@ export function Field({ label, hint, error, children, htmlFor }: { label: string
  * A data view that failed to load (R-039): says what went wrong and offers Retry,
  * instead of leaving skeletons on screen forever.
  */
+/** Password input with a show/hide eye button, same look as the sign-in form. */
+export function PasswordInput({ className = "", ...props }: Omit<React.InputHTMLAttributes<HTMLInputElement>, "type">) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <input {...props} type={show ? "text" : "password"} className={cx("field pr-11", className)} />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        aria-label={show ? "Hide password" : "Show password"}
+        aria-pressed={show}
+        className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer rounded-full p-1.5 text-ink-400 transition-colors hover:bg-ink-100 hover:text-ink-700"
+      >
+        {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      </button>
+    </div>
+  );
+}
+
 export function LoadError({ what, message, onRetry, className = "" }: { what: string; message?: string; onRetry: () => void; className?: string }) {
   return (
     <div role="alert" className={cx("card flex flex-col items-center gap-3 px-6 py-10 text-center", className)}>
