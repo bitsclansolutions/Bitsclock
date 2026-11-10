@@ -192,17 +192,18 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   if (!claims) return null;
   // Cached for a minute; member, role and password mutations invalidate the "users"/"roles" tags.
   // Only the fields a session needs are loaded and cached, never the password hash (R-018).
-  const user = await cached(`session:${claims.userId}`, { ttlMs: 60_000, tags: ["users", "roles"] }, () =>
-    prisma.user.findUnique({ where: { id: claims.userId }, select: sessionUserSelect }),
-  );
-  if (!user || !user.isActive || user.tokenVersion !== claims.version) return null;
   // The device this token was issued to must still be signed in (R-060). Tokens issued
   // before session ids existed carry none and simply expire within 15 minutes.
-  if (claims.sessionId) {
-    const sid = claims.sessionId;
-    const live = await cached(`sid:${sid}`, { ttlMs: 60_000, tags: ["users"] }, () => isSessionLive(sid));
-    if (!live) return null;
-  }
+  // Both lookups run in parallel: each can cost a Redis or database round trip.
+  const sid = claims.sessionId;
+  const [user, live] = await Promise.all([
+    cached(`session:${claims.userId}`, { ttlMs: 60_000, tags: ["users", "roles"] }, () =>
+      prisma.user.findUnique({ where: { id: claims.userId }, select: sessionUserSelect }),
+    ),
+    sid ? cached(`sid:${sid}`, { ttlMs: 60_000, tags: ["users"] }, () => isSessionLive(sid)) : Promise.resolve(true),
+  ]);
+  if (!user || !user.isActive || user.tokenVersion !== claims.version) return null;
+  if (!live) return null;
   return toSessionUser(user);
 }
 

@@ -212,12 +212,13 @@ export function handler<Ctx>(fn: (req: Request, ctx: Ctx) => Promise<Response>, 
       const route = path.replace(CUID_IN_PATH, "/:id");
       // Per-IP per-route defaults, tunable per deployment (e.g. behind a corporate NAT many users share one IP).
       const limit = typeof opts.limit === "function" ? opts.limit() : opts.limit ?? (mutating ? envLimit("RATE_LIMIT_WRITES_PER_MIN", 120) : envLimit("RATE_LIMIT_READS_PER_MIN", 600));
-      const rl = await rateLimit(`${route}:${method}:${clientIp(req)}`, limit, opts.windowMs ?? 60_000);
-      if (!rl.ok) throw new ApiError(429, "Too many requests. Please slow down.", { "Retry-After": String(rl.retryAfterSec) });
       if (mutating) assertSameOrigin(req);
+      // The IP limit and the session lookup are independent, so they share one round trip.
+      // A request over the IP limit still never reaches the handler.
+      const [rl, me] = await Promise.all([rateLimit(`${route}:${method}:${clientIp(req)}`, limit, opts.windowMs ?? 60_000), getSessionUser()]);
+      if (!rl.ok) throw new ApiError(429, "Too many requests. Please slow down.", { "Retry-After": String(rl.retryAfterSec) });
 
       // Per user, whichever IP they come from: one account can't flood the API (R-067).
-      const me = await getSessionUser();
       if (me) {
         const perUser = mutating ? envLimit("USER_WRITES_PER_MIN", 60) : envLimit("USER_READS_PER_MIN", 300);
         const u = await rateLimit(`user:${me.id}:${mutating ? "w" : "r"}`, perUser, 60_000);

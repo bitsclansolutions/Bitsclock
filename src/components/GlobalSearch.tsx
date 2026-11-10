@@ -6,27 +6,29 @@ import { useFocusTrap } from "@/lib/focus";
 /** A result id made safe for use in an element id. */
 const i2id = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, "_");
 import { useRouter } from "next/navigation";
-import { BarChart3, CalendarDays, Clock3, FolderKanban, LayoutGrid, Search, Settings, ShieldCheck, Users, X } from "lucide-react";
+import { Activity, BarChart3, CalendarDays, Clock3, FolderKanban, LayoutGrid, Search, Settings, ShieldCheck, UserRound, Users, X } from "lucide-react";
 import { useUser } from "@/context/UserContext";
-import { qs, rangeToInstants, tzName } from "@/lib/client";
 import { useApi } from "@/lib/useApi";
-import type { EntryDTO } from "@/lib/entries";
-import type { ProjectDTO } from "@/app/api/projects/route";
-import type { MemberDTO } from "@/app/api/users/route";
-import { addDays, dayKey, fmtHours } from "@/lib/time";
+import type { Permission } from "@/lib/permissions";
+import type { SearchDTO } from "@/lib/search";
+import { fmtHours } from "@/lib/time";
 import { Avatar, ProjectDot, cx } from "./ui";
 
-type Result = { id: string; group: "Pages" | "Projects" | "Members" | "Entries"; title: string; hint?: string; href: string; icon: React.ReactNode };
+type Group = "Pages" | "Projects" | "Members" | "Entries" | "Roles";
+type Result = { id: string; group: Group; title: string; hint?: string; href: string; icon: React.ReactNode };
 
-const PAGES: { label: string; href: string; icon: React.ReactNode; keywords: string }[] = [
+/** Same access rules as the side menu (AppShell NAV): a page shows only if the user may open it. */
+const PAGES: { label: string; href: string; icon: React.ReactNode; keywords: string; any?: Permission[] }[] = [
   { label: "Dashboard", href: "/dashboard", icon: <LayoutGrid className="h-4 w-4" />, keywords: "home overview" },
-  { label: "Time tracker", href: "/tracker", icon: <Clock3 className="h-4 w-4" />, keywords: "timer entries log hours" },
-  { label: "Timesheet", href: "/timesheet", icon: <CalendarDays className="h-4 w-4" />, keywords: "week grid hours per day" },
-  { label: "Projects", href: "/projects", icon: <FolderKanban className="h-4 w-4" />, keywords: "clients work" },
-  { label: "Reports", href: "/reports", icon: <BarChart3 className="h-4 w-4" />, keywords: "export csv pdf totals" },
-  { label: "Team", href: "/team", icon: <Users className="h-4 w-4" />, keywords: "members people users" },
-  { label: "Roles & permissions", href: "/roles", icon: <ShieldCheck className="h-4 w-4" />, keywords: "access rbac" },
-  { label: "Settings", href: "/settings", icon: <Settings className="h-4 w-4" />, keywords: "profile password preferences" },
+  { label: "Time tracker", href: "/tracker", icon: <Clock3 className="h-4 w-4" />, keywords: "timer entries log hours", any: ["time.track"] },
+  { label: "Timesheet", href: "/timesheet", icon: <CalendarDays className="h-4 w-4" />, keywords: "week grid hours per day calendar", any: ["time.track", "time.view_all"] },
+  { label: "Projects", href: "/projects", icon: <FolderKanban className="h-4 w-4" />, keywords: "clients work activities", any: ["projects.view", "projects.manage"] },
+  { label: "Reports", href: "/reports", icon: <BarChart3 className="h-4 w-4" />, keywords: "export csv pdf totals", any: ["reports.view_own", "reports.view_all"] },
+  { label: "Analytics", href: "/analytics", icon: <Activity className="h-4 w-4" />, keywords: "trends charts drill", any: ["reports.view_own", "reports.view_all"] },
+  { label: "Team", href: "/team", icon: <Users className="h-4 w-4" />, keywords: "members people users", any: ["users.view", "users.manage", "users.request", "users.deactivate"] },
+  { label: "Roles & permissions", href: "/roles", icon: <ShieldCheck className="h-4 w-4" />, keywords: "access rbac", any: ["roles.manage"] },
+  { label: "Profile", href: "/profile", icon: <UserRound className="h-4 w-4" />, keywords: "account password devices sign out" },
+  { label: "Settings", href: "/settings", icon: <Settings className="h-4 w-4" />, keywords: "preferences display" },
 ];
 
 /** Linear substring match; returns a score so better matches sort first. */
@@ -38,13 +40,13 @@ function score(hay: string, needle: string) {
 }
 
 /**
- * Header search that expands into a centred overlay. Everything it searches is
- * already cached on the client (projects, members, the last 30 days of entries),
- * so results update on every keystroke with a simple linear scan.
+ * Header search that expands into a centred overlay. Pages are filtered locally by the
+ * user's permissions; entries (all time), projects, members and roles come from
+ * /api/search, which applies the same row-level scoping as the list endpoints.
  */
 export function GlobalSearch() {
   const router = useRouter();
-  const { can } = useUser();
+  const { user, can } = useUser();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
@@ -54,14 +56,15 @@ export function GlobalSearch() {
   // Tab stays in the overlay; focus returns to where it was when it closes (R-034).
   useFocusTrap(dialogRef, open);
 
-  const entriesUrl = useMemo(() => {
-    const today = new Date();
-    const range = rangeToInstants(dayKey(addDays(today, -29)), dayKey(today));
-    return `/api/time-entries${qs({ ...range, tz: tzName(), userId: can("time.view_all") ? "all" : "me", limit: 200 })}`;
-  }, [can]);
-  const projectsQ = useApi<{ projects: ProjectDTO[] }>("/api/projects?includeArchived=1", { enabled: open && can("projects.view"), ttlMs: 60_000 });
-  const membersQ = useApi<{ members: MemberDTO[] }>("/api/users", { enabled: open && (can("users.view") || can("time.view_all") || can("reports.view_all")), ttlMs: 60_000 });
-  const entriesQ = useApi<{ entries: EntryDTO[] }>(entriesUrl, { enabled: open && can("time.track"), ttlMs: 30_000 });
+  // The server searches all data (all time) within the caller's permissions; typing is debounced.
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebounced(q.trim()), 200);
+    return () => window.clearTimeout(t);
+  }, [q]);
+  const searchUrl = debounced.length >= 2 ? `/api/search?q=${encodeURIComponent(debounced.slice(0, 100))}` : null;
+  const searchQ = useApi<SearchDTO>(searchUrl, { enabled: open && !!searchUrl, ttlMs: 30_000 });
+  const pages = useMemo(() => PAGES.filter((p) => !p.any || p.any.some((k) => can(k))), [can]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -97,30 +100,41 @@ export function GlobalSearch() {
     const needle = q.trim().toLowerCase();
     const out: (Result & { s: number })[] = [];
     if (!needle) {
-      return PAGES.filter((p) => can("time.track") || p.href !== "/tracker").slice(0, 6).map((p) => ({ id: p.href, group: "Pages" as const, title: p.label, href: p.href, icon: p.icon }));
+      return pages.slice(0, 6).map((p) => ({ id: p.href, group: "Pages" as const, title: p.label, href: p.href, icon: p.icon }));
     }
-    for (const p of PAGES) {
+    for (const p of pages) {
       const s = Math.max(score(p.label, needle), score(p.keywords, needle));
       if (s >= 0) out.push({ id: p.href, group: "Pages", title: p.label, href: p.href, icon: p.icon, s: s + 1 });
     }
-    for (const p of projectsQ.data?.projects ?? []) {
-      const s = Math.max(score(p.name, needle), score(p.description, needle) - 0.5);
-      if (s >= 0) out.push({ id: `p:${p.id}`, group: "Projects", title: p.name, hint: p.isArchived ? "Archived" : `${fmtHours(p.totalSeconds)} tracked`, href: `/projects?q=${encodeURIComponent(p.name)}`, icon: <ProjectDot color={p.color} />, s });
+    const d = searchQ.data;
+    for (const p of d?.projects ?? []) {
+      out.push({ id: `p:${p.id}`, group: "Projects", title: p.name, hint: [p.kind === "activity" ? "Activity" : "Project", p.isArchived ? "Archived" : ""].filter(Boolean).join(" · "), href: `/projects?q=${encodeURIComponent(p.name)}`, icon: <ProjectDot color={p.color} />, s: score(p.name, needle) });
     }
-    for (const m of membersQ.data?.members ?? []) {
-      const s = Math.max(score(m.name, needle), score(m.email, needle) - 0.5, score(m.jobTitle, needle) - 0.5);
-      if (s >= 0) out.push({ id: `m:${m.id}`, group: "Members", title: m.name, hint: m.jobTitle || m.role.name, href: `/team?q=${encodeURIComponent(m.name)}`, icon: <Avatar name={m.name} size="sm" color={m.role.color} className="!h-6 !w-6 !text-[10px]" />, s });
+    for (const m of d?.members ?? []) {
+      out.push({ id: `m:${m.id}`, group: "Members", title: m.name, hint: [m.jobTitle || m.role.name, m.email].filter(Boolean).join(" · "), href: `/team?q=${encodeURIComponent(m.name)}`, icon: <Avatar name={m.name} size="sm" color={m.role.color} className="!h-6 !w-6 !text-[10px]" />, s: score(m.name, needle) });
     }
-    for (const e of entriesQ.data?.entries ?? []) {
-      const s = Math.max(score(e.description, needle), score(e.project?.name ?? "", needle) - 0.5);
-      if (s >= 0) out.push({ id: `e:${e.id}`, group: "Entries", title: e.description || e.project?.name || "No description", hint: `${e.project?.name ?? "No project"} · ${new Date(e.startTime).toLocaleDateString([], { month: "short", day: "numeric" })} · ${fmtHours(e.durationSeconds)}`, href: `/tracker?q=${encodeURIComponent(e.description || "")}`, icon: <Clock3 className="h-4 w-4 text-ink-400" />, s });
+    for (const e of d?.entries ?? []) {
+      const who = e.userId === user.id ? "" : e.user.name;
+      out.push({
+        id: `e:${e.id}`,
+        group: "Entries",
+        title: e.description || e.project?.name || "No description",
+        hint: [who, e.project?.name ?? "No project", new Date(e.startTime).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }), fmtHours(e.durationSeconds)].filter(Boolean).join(" · "),
+        href: can("time.track") ? `/tracker?q=${encodeURIComponent(e.description || e.project?.name || "")}` : "/timesheet",
+        icon: <Clock3 className="h-4 w-4 text-ink-400" />,
+        s: 0, // already newest first from the server
+      });
     }
-    const order = { Pages: 0, Projects: 1, Members: 2, Entries: 3 };
+    for (const r of d?.roles ?? []) {
+      out.push({ id: `r:${r.id}`, group: "Roles", title: r.name, hint: "Role", href: "/roles", icon: <ShieldCheck className="h-4 w-4" style={{ color: r.color }} />, s: score(r.name, needle) });
+    }
+    const order: Record<Group, number> = { Pages: 0, Entries: 1, Projects: 2, Members: 3, Roles: 4 };
+    const perGroup: Partial<Record<Group, number>> = {};
     return out
       .sort((a, b) => order[a.group] - order[b.group] || b.s - a.s)
-      .filter((r, i, arr) => arr.filter((x) => x.group === r.group).indexOf(r) < 6)
-      .slice(0, 24);
-  }, [q, projectsQ.data, membersQ.data, entriesQ.data, can]);
+      .filter((r) => (perGroup[r.group] = (perGroup[r.group] ?? 0) + 1) <= (r.group === "Entries" ? 10 : 6))
+      .slice(0, 30);
+  }, [q, pages, searchQ.data, can, user.id]);
 
   useEffect(() => setActive(0), [q]);
 
@@ -142,7 +156,7 @@ export function GlobalSearch() {
     }
   };
 
-  const loading = open && q && (projectsQ.loading || membersQ.loading || entriesQ.loading);
+  const loading = open && q.trim().length >= 2 && (debounced !== q.trim() || searchQ.loading);
 
   return (
     <>
