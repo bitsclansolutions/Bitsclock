@@ -6,6 +6,7 @@ import { clientIp } from "@/lib/rate-limit";
 import { revokeCredentialsTx } from "@/lib/sessions";
 import { invalidateTags } from "@/lib/server-cache";
 import { changePasswordSchema } from "@/lib/validation";
+import { passwordMatches } from "@/lib/password";
 
 /**
  * Change the caller's password. In one transaction (D-003): new hash + tokenVersion bump
@@ -17,7 +18,7 @@ export const PATCH = handler(
     const me = await requireUser();
     const { currentPassword, newPassword } = await parseBody(req, changePasswordSchema);
     const user = await prisma.user.findUniqueOrThrow({ where: { id: me.id }, select: { passwordHash: true } });
-    if (!(await bcrypt.compare(currentPassword, user.passwordHash))) throw new ApiError(400, "Current password is incorrect.");
+    if (!(await passwordMatches(currentPassword, user.passwordHash))) throw new ApiError(400, "Current password is incorrect.");
     const passwordHash = await bcrypt.hash(newPassword, 10);
     const updated = await prisma.$transaction(async (tx) => {
       const u = await tx.user.update({ where: { id: me.id }, data: { passwordHash, tokenVersion: { increment: 1 } }, select: { id: true, tokenVersion: true } });

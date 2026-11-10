@@ -31,7 +31,7 @@ export function LoginForm() {
     const next: { email?: string; password?: string } = {};
     if (!email.trim()) next.email = "Enter your email address.";
     else if (!emailField.safeParse(email).success) next.email = "That doesn't look like an email address. Use the format name@company.com.";
-    if (!password) next.password = "Enter your password.";
+    if (!password.trim()) next.password = "Enter your password.";
     setFieldErrors(next);
     return !next.email && !next.password;
   };
@@ -41,7 +41,9 @@ export function LoginForm() {
     setError("");
     setOfferReset(false);
     if (!checkFields()) return;
-    const payload = { email, password, remember };
+    // Email is trimmed here and on the server; the password goes as typed and the server
+    // ignores spaces at its ends (it also accepts an older password that really had them).
+    const payload = { email: email.trim(), password, remember };
     setBusy(true);
     try {
       await api("/api/auth/login", { method: "POST", json: payload });
@@ -103,6 +105,7 @@ export function LoginForm() {
               setEmail(e.target.value);
               if (fieldErrors.email) setFieldErrors((f) => ({ ...f, email: undefined }));
             }}
+            onBlur={() => setEmail((v) => v.trim())}
             placeholder="you@company.com"
           />
         </Field>

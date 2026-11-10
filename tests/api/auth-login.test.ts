@@ -18,6 +18,27 @@ describe("POST /api/auth/login", () => {
     expect(who.body.user.id).toBe(user.id);
   });
 
+  it("ignores spaces around the email and the password", async () => {
+    const user = await makeUser();
+    newBrowser();
+    const res = await call(login, "POST", "/api/auth/login", { body: { email: `  ${user.email.toUpperCase()} `, password: ` ${TEST_PASSWORD}  ` } });
+    expect(res.status).toBe(200);
+  });
+
+  it("still accepts an older password that really ends with a space", async () => {
+    const user = await makeUser({ password: "Spaced-pass-1 " });
+    newBrowser();
+    const res = await call(login, "POST", "/api/auth/login", { body: { email: user.email, password: "Spaced-pass-1 " } });
+    expect(res.status).toBe(200);
+  });
+
+  it("treats a password of only spaces as missing (400)", async () => {
+    const user = await makeUser();
+    newBrowser();
+    const res = await call(login, "POST", "/api/auth/login", { body: { email: user.email, password: "   " } });
+    expect(res.status).toBe(400);
+  });
+
   it("rejects a wrong password with 401 and no cookies", async () => {
     const user = await makeUser();
     const jar = newBrowser();

@@ -32,8 +32,10 @@ export const emailField = z
   .transform(cleanEmail)
   .pipe(z.string().max(LIMITS.email, "Email is too long.").regex(EMAIL_RE, "Enter a valid email."));
 
+/** New passwords are saved without leading/trailing spaces, which are almost always typing or paste mistakes. */
 export const passwordRule = z
   .string({ message: "Enter a password." })
+  .trim()
   .min(8, "Password must be at least 8 characters.")
   .max(LIMITS.password, "Password is too long.")
   .refine((p) => /[A-Za-z]/.test(p) && /\d/.test(p), "Use at least one letter and one number.");
@@ -61,7 +63,8 @@ export const instantField = z
 export const loginSchema = z
   .object({
     email: emailField,
-    password: z.string({ message: "Enter your password." }).min(1, "Enter your password.").max(LIMITS.password, "Password is too long."),
+    // Kept as typed: the route tries the trimmed password first and the exact one second (see passwordMatches).
+    password: z.string({ message: "Enter your password." }).max(LIMITS.password, "Password is too long.").refine((p) => p.trim().length > 0, "Enter your password."),
     remember: z.boolean().optional().default(false),
   })
   .strict();
@@ -70,11 +73,11 @@ export const logoutSchema = z.object({ everywhere: z.boolean().optional().defaul
 
 export const changePasswordSchema = z
   .object({
-    currentPassword: z.string().min(1, "Enter your current password.").max(LIMITS.password),
+    currentPassword: z.string().max(LIMITS.password).refine((p) => p.trim().length > 0, "Enter your current password."),
     newPassword: passwordRule,
   })
   .strict()
-  .refine((v) => v.currentPassword !== v.newPassword, { message: "Choose a different password.", path: ["newPassword"] });
+  .refine((v) => v.currentPassword.trim() !== v.newPassword, { message: "Choose a different password.", path: ["newPassword"] });
 
 export const forgotPasswordSchema = z.object({ email: emailField }).strict();
 

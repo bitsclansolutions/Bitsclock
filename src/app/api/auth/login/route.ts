@@ -4,6 +4,7 @@ import { handler, json, parseBody, ApiError } from "@/lib/api";
 import { startSession, toSessionUser, userWithRole } from "@/lib/auth";
 import { clientIp, envLimit, rateLimit, rateLimitReset } from "@/lib/rate-limit";
 import { loginSchema } from "@/lib/validation";
+import { passwordMatches } from "@/lib/password";
 
 // Hash compared when the email is unknown, so a wrong email takes as long as a wrong password.
 const DUMMY_HASH = bcrypt.hashSync("not-a-real-password", 10);
@@ -39,7 +40,7 @@ export const POST = handler(
     if (!anywhere.ok) throw tooMany(anywhere.retryAfterSec);
 
     const user = await prisma.user.findUnique({ where: { email }, ...userWithRole });
-    const ok = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH);
+    const ok = await passwordMatches(password, user?.passwordHash ?? DUMMY_HASH);
     if (!user || !ok) throw new ApiError(401, BAD_CREDENTIALS);
     // Only reached with the right password, so saying "deactivated" reveals nothing new.
     if (!user.isActive) throw new ApiError(403, "This account has been deactivated. Ask your administrator to reactivate it.");

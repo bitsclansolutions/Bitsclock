@@ -122,7 +122,8 @@ async function apiOnce<T>(path: string, init: ApiInit = {}): Promise<T> {
       }
     }
   }
-  return finish<T>(res);
+  // A 401 from the sign-in call means wrong credentials, not an expired session.
+  return finish<T>(res, path.split("?")[0] !== "/api/auth/login");
 }
 
 function classify(e: unknown): ApiClientError {
@@ -159,8 +160,8 @@ async function apiFetch(path: string, rest: RequestInit, body: unknown, method: 
   });
 }
 
-async function finish<T>(res: Response): Promise<T> {
-  if (res.status === 401) {
+async function finish<T>(res: Response, unauthorizedMeansExpired = true): Promise<T> {
+  if (res.status === 401 && unauthorizedMeansExpired) {
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
       // Session expired: a full reload to the sign-in page clears all client state. Open
       // forms have already kept their drafts (R-038); sign-in returns to this exact page.
