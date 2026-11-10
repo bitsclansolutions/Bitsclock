@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client";
+import { onInvalidate } from "@/lib/useApi";
 import { readPrefs } from "@/lib/prefs";
 import type { EntryDTO } from "@/lib/entries";
 
@@ -80,6 +81,22 @@ export function TimerProvider({ children, enabled = true }: { children: React.Re
       setLoading(false);
     }
   }, [enabled, setActive]);
+
+  // A timer started or stopped on another device (seen by the change feed) or any entry
+  // change: re-check the running timer so the header pill is never out of date.
+  useEffect(() => {
+    if (!enabled) return;
+    let t: number | undefined;
+    const off = onInvalidate((prefixes) => {
+      if (!prefixes.some((p) => "/api/time-entries/active".startsWith(p))) return;
+      window.clearTimeout(t);
+      t = window.setTimeout(() => void refresh(), 50); // several invalidations in a row → one check
+    });
+    return () => {
+      off();
+      window.clearTimeout(t);
+    };
+  }, [enabled, refresh]);
 
   // Initial load: storage first, then one server check per session.
   useEffect(() => {

@@ -123,7 +123,17 @@ async function apiOnce<T>(path: string, init: ApiInit = {}): Promise<T> {
     }
   }
   // A 401 from the sign-in call means wrong credentials, not an expired session.
-  return finish<T>(res, path.split("?")[0] !== "/api/auth/login");
+  const out = await finish<T>(res, path.split("?")[0] !== "/api/auth/login");
+  // Any successful change: every cached GET may now be out of date (see useApi).
+  if (mutating) for (const l of mutationListeners) l(path);
+  return out;
+}
+
+const mutationListeners = new Set<(path: string) => void>();
+/** Called after every successful POST/PATCH/PUT/DELETE made through `api()`. Returns an unsubscribe. */
+export function onMutation(listener: (path: string) => void) {
+  mutationListeners.add(listener);
+  return () => mutationListeners.delete(listener);
 }
 
 function classify(e: unknown): ApiClientError {

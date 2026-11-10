@@ -22,6 +22,7 @@
 
 import { kv, kvEnabled, kvPipeline } from "./kv";
 import { runAfterResponse } from "./background";
+import { headers } from "next/headers";
 
 export type CacheTag = "users" | "roles" | "projects" | "entries" | "settings" | `entries:${string}`;
 
@@ -42,13 +43,30 @@ const VERSIONS_TTL_MS = 5000;
 // Tags whose versions are being fetched right now: parallel cached() calls share one MGET.
 const versionsInflight = new Map<string, Promise<void>>();
 
+/**
+ * The browser asks for a fresh copy (Cache-Control: no-cache, sent with fetch cache:"reload"
+ * right after a change): then this instance's remembered versions are not trusted, so a
+ * change made on another instance is seen at once instead of within VERSIONS_TTL_MS.
+ */
+async function requestWantsFresh() {
+  try {
+    const h = await headers();
+    return /no-cache/i.test(h.get("cache-control") ?? "") || /no-cache/i.test(h.get("pragma") ?? "");
+  } catch {
+    return false; // outside a request (scripts, tests)
+  }
+}
+/** Versions read this recently count as fresh even for a no-cache request (several lookups share one read). */
+const FRESH_ENOUGH_MS = 250;
+
 async function tagVersions(tags: CacheTag[]): Promise<number[]> {
   // A change made in this process is still on its way to Redis: wait for it, so we read the new version.
   if (pendingBumps.size) await Promise.all([...pendingBumps]);
+  const maxAge = (await requestWantsFresh()) ? FRESH_ENOUGH_MS : VERSIONS_TTL_MS;
   const now = Date.now();
   const stale = tags.filter((t) => {
     const hit = versions.get(t);
-    return !hit || now - hit.at >= VERSIONS_TTL_MS;
+    return !hit || now - hit.at >= maxAge;
   });
   const missing = stale.filter((t) => !versionsInflight.has(t));
   if (missing.length) {
@@ -127,6 +145,15 @@ export async function cached<T>(key: string, opts: { ttlMs: number; tags: CacheT
   })().finally(() => inflight.delete(fullKey));
   inflight.set(fullKey, p);
   return p;
+}
+
+/**
+ * A short token that changes whenever any of `tags` is invalidated (on any instance).
+ * Polled by the browser (/api/changes) so changes made by other people show up without a reload.
+ */
+export async function changeToken(tags: CacheTag[]): Promise<string> {
+  if (!kvEnabled) return tags.map(gen).join(".");
+  return (await tagVersions(tags)).join(".");
 }
 
 // Redis version bumps not yet confirmed; the API handler awaits them before responding.

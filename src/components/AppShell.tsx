@@ -12,7 +12,7 @@ import { useUser } from "@/context/UserContext";
 import { useTimer } from "@/context/TimerContext";
 import { useToast } from "@/context/ToastContext";
 import { api, errMsg } from "@/lib/client";
-import { prefetch, seed } from "@/lib/useApi";
+import { prefetch, seed, useLiveUpdates } from "@/lib/useApi";
 import type { BootstrapDTO } from "@/app/api/bootstrap/route";
 import { fmtClock, fmtHours } from "@/lib/time";
 import type { Permission } from "@/lib/permissions";
@@ -143,6 +143,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [drawer]);
+
+  // Other people's and other devices' changes appear without a reload.
+  useLiveUpdates();
 
   // Apply saved display preferences, and warm the client cache with one bulk call
   // instead of a separate request per list.
