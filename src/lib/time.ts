@@ -56,11 +56,21 @@ const currentWeekStart = (): WeekStart => (weekStartsSunday ? "sunday" : "monday
 // Without a zone set (server code, tests) both conversions are identity.
 // ---------------------------------------------------------------------------------------
 let zone: string | null = null;
+let requestedZone: string | null = null;
 const offsetFormatters = new Map<string, Intl.DateTimeFormat>();
 
 /** Set the workspace zone for this browser session (called by the app shell). */
 export function setTimeZone(tz: string | null) {
+  requestedZone = tz;
   zone = tz && isValidTimeZone(tz) ? tz : null;
+}
+/**
+ * The zone the server asked for, even if this browser doesn't know it (then the browser's own
+ * zone is used). Compare server values against this, not currentTimeZone(), or an unknown
+ * zone would look "changed" on every check.
+ */
+export function requestedTimeZone() {
+  return requestedZone;
 }
 /** The zone times are shown in: the workspace zone, or the browser's own before it is known. */
 export function currentTimeZone() {

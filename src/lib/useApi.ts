@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, errMsg, onMutation } from "./client";
-import { currentTimeZone } from "./time";
+import { requestedTimeZone } from "./time";
 
 /**
  * Stale-while-revalidate data hook for the app's GET endpoints.
@@ -168,6 +168,12 @@ if (typeof window !== "undefined") {
   // Back online after a drop: every mounted hook refetches, bypassing the browser cache.
   window.addEventListener("online", () => invalidateLocal(["/api"]));
   channel?.addEventListener("message", (e: MessageEvent<{ type?: string; prefixes?: unknown }>) => {
+    // Signed out in another tab: the cookie is gone for every tab, so this one leaves too
+    // (and never shows that person's data to whoever signs in next).
+    if (e.data?.type === "signout") {
+      window.location.replace("/login");
+      return;
+    }
     if (e.data?.type === "invalidate" && Array.isArray(e.data.prefixes)) invalidateLocal(e.data.prefixes.filter((p): p is string => typeof p === "string" && p.startsWith("/api")));
   });
   // Every successful change (an entry added, a timer stopped, a project renamed…) can affect
@@ -175,41 +181,65 @@ if (typeof window !== "undefined") {
   // and every other page the next time it opens. Session-list calls are excluded (own cache).
   onMutation((path) => {
     if (path.startsWith("/api/auth/refresh")) return;
-    lastLocalChangeAt = Date.now();
     invalidate("/api");
   });
 }
 
-let lastLocalChangeAt = 0;
+/** Tell the other tabs of this browser that this person signed out. */
+export function broadcastSignOut() {
+  try {
+    channel?.postMessage({ type: "signout" });
+  } catch {
+    /* ignore */
+  }
+}
+
 const CHANGE_POLL_MS = 10_000;
+const RELOAD_GUARD_KEY = "bc:live-reload";
 
 /**
  * Changes made by other people or on other devices: polls /api/changes (a token, no data)
  * every 10 s while the tab is visible, and at once when the tab comes back into view.
- * When the token moves, everything cached is refreshed. Mounted once, by the app shell.
+ * When the token moves, everything cached is refreshed (also after our own change: one
+ * extra refetch, served from the server cache, is cheaper than missing someone else's
+ * change made in the same window). Mounted once, by the app shell.
  */
-export function useLiveUpdates(access: string) {
+export function useLiveUpdates(access: string, userId: string) {
   useEffect(() => {
     let token: string | null = null;
-    let checkedAt = 0;
     let busy = false;
     const check = async () => {
       if (busy || document.visibilityState !== "visible") return;
       busy = true;
-      const started = Date.now();
       try {
-        const res = await api<{ token: string; timeZone?: string; access?: string }>("/api/changes", { cache: "no-store", retry: false });
-        // The Administrator changed the workspace time zone (every date must be redrawn in it), or
-        // this person's role/permissions (menu and cached pages must match): reload once.
-        if ((res.timeZone && res.timeZone !== currentTimeZone()) || (res.access && res.access !== access)) {
+        const res = await api<{ token: string; timeZone?: string; access?: string; userId?: string }>("/api/changes", { cache: "no-store", retry: false });
+        // Someone else signed in from another tab (same cookie jar): this page belongs to the
+        // previous person, so load it fresh as the new one.
+        if (res.userId && res.userId !== userId) {
           window.location.reload();
           return;
         }
-        // Our own change already refreshed everything; just adopt the new token.
-        const ownChange = lastLocalChangeAt >= checkedAt;
-        if (token !== null && res.token !== token && !ownChange) invalidate("/api");
+        // The Administrator changed the workspace time zone (every date must be redrawn in it), or
+        // this person's role/permissions (menu and cached pages must match): reload once. Guarded
+        // so a value that a reload can't settle (a zone this browser doesn't know) never loops.
+        const zoneChanged = !!res.timeZone && res.timeZone !== requestedTimeZone();
+        const accessChanged = !!res.access && res.access !== access;
+        if (zoneChanged || accessChanged) {
+          const marker = `${res.timeZone}|${res.access}`;
+          let last: string | null = null;
+          try {
+            last = sessionStorage.getItem(RELOAD_GUARD_KEY);
+            sessionStorage.setItem(RELOAD_GUARD_KEY, marker);
+          } catch {
+            /* ignore */
+          }
+          if (last !== marker) {
+            window.location.reload();
+            return;
+          }
+        }
+        if (token !== null && res.token !== token) invalidate("/api");
         token = res.token;
-        checkedAt = started;
       } catch {
         /* offline or signed out: the next check will tell */
       } finally {
@@ -226,7 +256,7 @@ export function useLiveUpdates(access: string) {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, [access]);
+  }, [access, userId]);
 }
 
 type State<T> = { data?: T; error?: string; loading: boolean; stale: boolean };
@@ -273,7 +303,17 @@ export function useApi<T>(url: string | null, opts: { ttlMs?: number; enabled?: 
   }, [url, enabled, ttlMs, tick]);
 
   const refresh = useCallback(() => {
-    if (url) mem.delete(url);
+    if (url) {
+      // Drop both copies: with only the memory one gone, a fresh sessionStorage copy would be
+      // read back and no request made. Marked invalidated so the browser HTTP cache is skipped too.
+      mem.delete(url);
+      try {
+        sessionStorage.removeItem(STORAGE_PREFIX + url);
+      } catch {
+        /* ignore */
+      }
+      invalidatedAt.set(url, Date.now());
+    }
     setTick((t) => t + 1);
   }, [url]);
 

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
-import { ApiError, handler, json, jsonCached, parseBody, parseQuery, requirePermission } from "@/lib/api";
+import { ApiError, handler, json, jsonCached, parseBody, parseQuery, requireAnyPermission, requirePermission } from "@/lib/api";
+import { PROJECT_LIST_PERMISSIONS } from "@/lib/permissions";
 import { projectCreateSchema, projectsQuerySchema } from "@/lib/validation";
 import { loadProjects, projectScope, validateMemberIds } from "@/lib/projects";
 import { PROJECT_COLORS } from "@/lib/time";
@@ -7,9 +8,13 @@ import { cached, entryTags, invalidateTags } from "@/lib/server-cache";
 
 export type { ProjectDTO } from "@/lib/projects";
 
-/** Project list, scoped to what the caller may see (see loadProjects). */
+/**
+ * Project list, scoped to what the caller may see (see loadProjects). Open to anyone who
+ * tracks time or reports on it, not only projects.view: the tracker needs the projects a
+ * member was added to, and the scoping keeps everyone else's projects out.
+ */
 export const GET = handler(async (req) => {
-  const me = await requirePermission("projects.view");
+  const me = await requireAnyPermission(...PROJECT_LIST_PERMISSIONS);
   const { includeArchived } = parseQuery(new URL(req.url), projectsQuerySchema);
   const { seeAll, seeMembers } = projectScope(me);
   const projects = await cached(

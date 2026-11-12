@@ -48,14 +48,17 @@ export function projectScope(me: SessionUser) {
  * - Managers (projects.manage, time.view_all, reports.view_all or dashboard.team) see every
  *   project with team-wide totals and the member list.
  * - Everyone else sees only projects they may log time on (open to all, or they are on the
- *   team), with totals computed from their own entries and no member list.
+ *   team) or already have time on, with totals from their own entries and no member list.
+ *   Pickers for new time use `canLog`, so a project they were removed from can't take new time.
  */
 export async function loadProjects(me: SessionUser, includeArchived: boolean, seeAll: boolean, seeMembers: boolean): Promise<ProjectDTO[]> {
   const meId = me.id;
   const projects = await prisma.project.findMany({
     where: {
       ...(includeArchived ? {} : { isArchived: false }),
-      ...(seeAll ? {} : { OR: [{ memberMode: "all" }, { members: { some: { userId: meId } } }] }),
+      // Also projects they logged time on before being removed: their reports still show those
+      // entries, so the filters must offer the project (canLog stays false for it).
+      ...(seeAll ? {} : { OR: [{ memberMode: "all" }, { members: { some: { userId: meId } } }, { timeEntries: { some: { userId: meId } } }] }),
     },
     include: { members: { select: { userId: true } } },
     // Projects first, then activities ("project" sorts after "activity", hence desc).

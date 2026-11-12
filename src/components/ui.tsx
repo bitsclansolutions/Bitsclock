@@ -1,7 +1,7 @@
 "use client";
 
 import { cloneElement, isValidElement, useEffect, useId, useRef, useState } from "react";
-import { Eye, EyeOff, Loader2, RotateCcw, X } from "lucide-react";
+import { Eye, EyeOff, Loader2, Lock, RotateCcw, X } from "lucide-react";
 import { initials } from "@/lib/time";
 import { anyPopupOpen, initialFocus, useFocusTrap, useLatest } from "@/lib/focus";
 
@@ -170,7 +170,13 @@ export function Seg<T extends string>({
   };
   const selectedIndex = Math.max(0, options.findIndex((o) => o.value === value));
   return (
-    <div ref={ref} role="radiogroup" aria-label={label} aria-disabled={disabled || undefined} title={title} className="seg">
+    <div ref={ref} role="radiogroup" aria-label={disabled && title ? `${label} (${title})` : label} aria-disabled={disabled || undefined} title={title} className="seg">
+      {/* Read-only: a lock says why nothing happens on click (the reason is in `title`). */}
+      {disabled && (
+        <span className="seg-lock" aria-hidden="true">
+          <Lock className="h-3.5 w-3.5" />
+        </span>
+      )}
       {options.map((o, i) => (
         <button
           key={o.value}

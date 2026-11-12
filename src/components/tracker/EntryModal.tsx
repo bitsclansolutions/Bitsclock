@@ -190,6 +190,7 @@ export function EntryModal({ open, onClose, entry, projects, forUserId, onSaved,
             <Field label="Billing" hint="Set by the project">
               <Seg
                 disabled
+                title="Set by the project"
                 value={billable ? "billable" : "non_billable"}
                 onChange={() => {}}
                 label="Billing"

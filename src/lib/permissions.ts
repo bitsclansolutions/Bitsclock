@@ -16,7 +16,7 @@ export const PERMISSION_GROUPS = [
     key: "projects",
     label: "Projects",
     permissions: [
-      { key: "projects.view", label: "View projects", description: "See the project list and pick a project when tracking." },
+      { key: "projects.view", label: "View projects", description: "Open the Projects page. Tracking time on assigned projects doesn't need this." },
       { key: "projects.manage", label: "Manage projects", description: "Create, edit, archive and delete projects." },
     ],
   },
@@ -57,6 +57,21 @@ const PERMISSION_SET = new Set<string>(ALL_PERMISSIONS);
 
 export const ADMIN_ROLE_NAME = "Administrator";
 export const EMPLOYEE_ROLE_NAME = "Employee";
+
+/**
+ * Any of these lets a member load the project list (/api/projects). The list itself is scoped
+ * (loadProjects): non-managers get only the projects they may log time on, with their own
+ * totals. So tracking time needs no projects.view: a member sees the projects they were added to.
+ */
+export const PROJECT_LIST_PERMISSIONS = [
+  "projects.view",
+  "projects.manage",
+  "time.track",
+  "time.view_all",
+  "reports.view_own",
+  "reports.view_all",
+  "dashboard.team",
+] as const satisfies readonly Permission[];
 
 export const DEFAULT_EMPLOYEE_PERMISSIONS: Permission[] = ["time.track", "projects.view", "reports.view_own", "reports.export"];
 

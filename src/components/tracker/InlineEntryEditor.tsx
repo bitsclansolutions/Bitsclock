@@ -148,6 +148,7 @@ export function InlineEntryEditor({ entry, projects, onSaved, onCancel }: { entr
           <Seg
             label="Billing"
             disabled={!canOverrideBillable}
+            title={canOverrideBillable ? "Billing for this entry" : "Set by the project"}
             value={billable ? "billable" : "non_billable"}
             onChange={(v) => setBillable(v === "billable")}
             options={[

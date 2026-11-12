@@ -7,7 +7,7 @@ import { useUser } from "@/context/UserContext";
 import { useToast } from "@/context/ToastContext";
 import { useConfirm } from "@/context/ConfirmContext";
 import { api, errMsg, qs, tzName } from "@/lib/client";
-import { invalidate, useApi } from "@/lib/useApi";
+import { broadcastSignOut, invalidate, useApi } from "@/lib/useApi";
 import { changePasswordSchema, clientCheck, profileSchema } from "@/lib/validation";
 import { LIMITS } from "@/lib/sanitize";
 import type { DashboardDTO } from "@/app/api/dashboard/route";
@@ -135,6 +135,7 @@ export function ProfileView() {
       /* ignore */
     }
     // Full page load: wipes this tab's in-memory data and page caches (see AppShell useLogout).
+    broadcastSignOut();
     window.location.replace("/login");
   };
 

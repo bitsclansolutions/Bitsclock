@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useFocusTrap } from "@/lib/focus";
 import { Activity, BarChart3, CalendarDays, Clock3, FolderKanban, LayoutGrid, LogOut, Menu, Settings, ShieldCheck, Square, UserRound, Users, X } from "lucide-react";
 import { GlobalSearch } from "./GlobalSearch";
@@ -12,10 +12,10 @@ import { useUser } from "@/context/UserContext";
 import { useTimer } from "@/context/TimerContext";
 import { useToast } from "@/context/ToastContext";
 import { api, errMsg } from "@/lib/client";
-import { prefetch, seed, useLiveUpdates } from "@/lib/useApi";
+import { broadcastSignOut, prefetch, seed, useLiveUpdates } from "@/lib/useApi";
 import type { BootstrapDTO } from "@/app/api/bootstrap/route";
 import { fmtClock, fmtHours } from "@/lib/time";
-import { accessKey, type Permission } from "@/lib/permissions";
+import { accessKey, PROJECT_LIST_PERMISSIONS, type Permission } from "@/lib/permissions";
 import { Avatar, cx } from "./ui";
 
 type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string; strokeWidth?: number }>; any?: Permission[] };
@@ -60,7 +60,8 @@ function useLogout() {
     }
     // A full page load, not a client-side navigation: it wipes everything this tab holds in
     // memory (data cache, router cache of rendered pages), so the next person to sign in
-    // here never sees this person's data.
+    // here never sees this person's data. The other open tabs leave too.
+    broadcastSignOut();
     window.location.replace("/login");
   };
 }
@@ -87,7 +88,6 @@ function TimerPill() {
   const { active, elapsed, stop } = useTimer();
   const { can } = useUser();
   const toast = useToast();
-  const router = useRouter();
   const [busy, setBusy] = useState(false);
   if (!can("time.track") || !active) return null;
   const onStop = async () => {
@@ -95,7 +95,6 @@ function TimerPill() {
     try {
       const e = await stop();
       toast.success("Timer stopped", e ? `${fmtHours(e.durationSeconds)} logged` : undefined);
-      router.refresh();
     } catch (err) {
       toast.error("Couldn't stop the timer", errMsg(err));
     } finally {
@@ -146,7 +145,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [drawer]);
 
   // Other people's and other devices' changes appear without a reload.
-  useLiveUpdates(accessKey(user));
+  useLiveUpdates(accessKey(user), user.id);
 
   // Apply saved display preferences, and warm the client cache with one bulk call
   // instead of a separate request per list.
@@ -159,7 +158,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         seed("/api/time-entries/active", { entry: b.active });
       })
       .catch(() => {
-        if (can("projects.view")) prefetch("/api/projects");
+        if (PROJECT_LIST_PERMISSIONS.some((p) => can(p))) prefetch("/api/projects");
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per session
   }, []);

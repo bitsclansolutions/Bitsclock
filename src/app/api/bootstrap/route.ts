@@ -4,10 +4,11 @@ import { getActiveEntry, type EntryDTO } from "@/lib/entries";
 import { loadMembers, type MemberDTO } from "@/lib/members";
 import { loadProjects, projectScope, type ProjectDTO } from "@/lib/projects";
 import { cached, entryTags } from "@/lib/server-cache";
+import { PROJECT_LIST_PERMISSIONS } from "@/lib/permissions";
 
 export type BootstrapDTO = {
   user: SessionUser;
-  /** Projects the caller may see; null when they lack projects.view. */
+  /** Projects the caller may see; null when they hold none of PROJECT_LIST_PERMISSIONS. */
   projects: ProjectDTO[] | null;
   /** Member list for pickers and the team page; null when they may not list members. */
   members: MemberDTO[] | null;
@@ -23,7 +24,7 @@ export type BootstrapDTO = {
 export const GET = handler(async (req) => {
   const me = await requireUser();
   const { seeAll, seeMembers } = projectScope(me);
-  const canProjects = hasPermission(me, "projects.view");
+  const canProjects = PROJECT_LIST_PERMISSIONS.some((p) => hasPermission(me, p));
   const fullMembers = hasPermission(me, "users.view");
   const canMembers = fullMembers || hasPermission(me, "time.view_all") || hasPermission(me, "reports.view_all") || hasPermission(me, "projects.manage");
   // Team member lists and team project totals depend on everyone's time; otherwise only on the caller's (R-030).

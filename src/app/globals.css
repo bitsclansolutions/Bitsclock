@@ -338,7 +338,20 @@ textarea::placeholder {
   }
   /* Read-only segmented control: the choice stays readable, nothing reacts to the pointer. */
   .seg > button:disabled {
-    cursor: default;
+    cursor: not-allowed;
+  }
+  /* The option that isn't chosen fades, so a locked control reads as a status, not a choice. */
+  .seg > button:disabled:not(.on) {
+    color: var(--color-ink-300);
+  }
+  .seg[aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+  .seg-lock {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.15rem 0 0.55rem;
+    color: var(--color-ink-400);
   }
   .seg > button.on {
     background: #fff;

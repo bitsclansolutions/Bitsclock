@@ -7,6 +7,7 @@ import { GET as activeRoute } from "@/app/api/time-entries/active/route";
 import { DELETE as bulkDelete } from "@/app/api/time-entries/bulk/route";
 import { PATCH as setWorkspace } from "@/app/api/workspace/route";
 import { DELETE as deleteProject } from "@/app/api/projects/[id]/route";
+import { GET as listProjects } from "@/app/api/projects/route";
 import { prisma } from "@/lib/prisma";
 import { entrySql, entryWhere, type EntryFilter } from "@/lib/entry-filter";
 import { Prisma } from "@/lib/prisma";
@@ -208,5 +209,42 @@ describe("entry list paging (R-025)", () => {
     } while (cursor);
     expect(seen).toHaveLength(8);
     expect(new Set(seen).size).toBe(8);
+  });
+});
+
+describe("project list for members without projects.view", () => {
+  it("a member who only tracks time sees the projects they were added to (and open ones), nothing else", async () => {
+    const role = await makeRole(["time.track"]);
+    const user = await makeUser({ role });
+    const mine = await makeProject({ memberMode: "selected" });
+    await prisma.project.update({ where: { id: mine.id }, data: { members: { create: { userId: user.id } } } });
+    const open = await makeProject({ memberMode: "all" });
+    const notMine = await makeProject({ memberMode: "selected" });
+    await signIn(user);
+    const res = await call<{ projects: { id: string; canLog: boolean; memberIds: string[] }[] }>(listProjects, "GET", "/api/projects");
+    expect(res.status).toBe(200);
+    const ids = res.body.projects.map((p) => p.id);
+    expect(ids).toEqual(expect.arrayContaining([mine.id, open.id]));
+    expect(ids).not.toContain(notMine.id);
+    expect(res.body.projects.find((p) => p.id === mine.id)?.canLog).toBe(true);
+    // No member list without users.view: only the caller's own id.
+    expect(res.body.projects.find((p) => p.id === mine.id)?.memberIds).toEqual([user.id]);
+  });
+
+  it("a project they were removed from stays listed for reports, but can't take new time", async () => {
+    const role = await makeRole(["reports.view_own"]);
+    const user = await makeUser({ role });
+    const former = await makeProject({ memberMode: "selected" });
+    await makeEntry(user.id, iso(Date.now() - 48 * H), 60, { projectId: former.id });
+    await signIn(user);
+    const res = await call<{ projects: { id: string; canLog: boolean }[] }>(listProjects, "GET", "/api/projects?includeArchived=1");
+    expect(res.status).toBe(200);
+    expect(res.body.projects.find((p) => p.id === former.id)?.canLog).toBe(false);
+  });
+
+  it("a role with none of the list permissions still gets 403", async () => {
+    const role = await makeRole(["users.view"]);
+    await signIn(await makeUser({ role }));
+    expect((await call(listProjects, "GET", "/api/projects")).status).toBe(403);
   });
 });

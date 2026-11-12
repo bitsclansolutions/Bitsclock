@@ -22,5 +22,6 @@ export const GET = handler(async () => {
   // The zone too: an open app reloads when the Administrator changes it (D-012).
   // And the caller's access: when their role or its permissions change, the app reloads so
   // the menu and cached pages match what they may do now.
-  return json({ token, timeZone, access: accessKey(me) }, { headers: { "Cache-Control": "no-store" } });
+  // And who is signed in: a tab still showing someone else's pages reloads as this person.
+  return json({ token, timeZone, access: accessKey(me), userId: me.id }, { headers: { "Cache-Control": "no-store" } });
 });

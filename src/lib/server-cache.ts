@@ -71,7 +71,14 @@ async function tagVersions(tags: CacheTag[]): Promise<number[]> {
   const missing = stale.filter((t) => !versionsInflight.has(t));
   if (missing.length) {
     const p = kv<(string | null)[]>("MGET", ...missing.map((t) => `tagver:${t}`))
-      .then((raw) => missing.forEach((t, i) => versions.set(t, { v: Number(raw[i] ?? 0), at: Date.now() })))
+      // Versions only go up: a read that started before a bump in this process must not land after
+      // it and put the old version back (that would serve pre-change data right after a change).
+      .then((raw) =>
+        missing.forEach((t, i) => {
+          const v = Number(raw[i] ?? 0);
+          versions.set(t, { v: Math.max(v, versions.get(t)?.v ?? 0, bumpedTo.get(t) ?? 0), at: Date.now() });
+        }),
+      )
       .catch(() => {
         for (const t of missing) if (!versions.has(t)) versions.set(t, { v: 0, at: Date.now() });
       })
@@ -158,6 +165,8 @@ export async function changeToken(tags: CacheTag[]): Promise<string> {
 
 // Redis version bumps not yet confirmed; the API handler awaits them before responding.
 const pendingBumps = new Set<Promise<unknown>>();
+/** Highest version this process has bumped each tag to (a floor for later reads, which may land out of order). */
+const bumpedTo = new Map<CacheTag, number>();
 
 export function invalidateTags(...tags: CacheTag[]) {
   if (!tags.length) return;
@@ -167,10 +176,19 @@ export function invalidateTags(...tags: CacheTag[]) {
   }
   // In-flight loads still finish, but the generation check stops them caching what they got.
   if (kvEnabled) {
-    for (const t of tags) versions.delete(t); // re-read after the bump
+    for (const t of tags) {
+      versions.delete(t); // re-read after the bump
+      versionsInflight.delete(t); // a read already on its way may predate the bump: don't join it
+    }
     const bump = kvPipeline<number>(tags.map((t) => ["INCR", `tagver:${t}`]))
       // The new versions come straight back: no extra MGET, and no window where this process reads the old one.
-      .then((vs) => tags.forEach((t, i) => versions.set(t, { v: Number(vs[i] ?? 0), at: Date.now() })))
+      .then((vs) =>
+        tags.forEach((t, i) => {
+          const v = Number(vs[i] ?? 0);
+          bumpedTo.set(t, Math.max(v, bumpedTo.get(t) ?? 0));
+          versions.set(t, { v: Math.max(v, versions.get(t)?.v ?? 0), at: Date.now() });
+        }),
+      )
       .catch(() => {})
       .finally(() => pendingBumps.delete(bump));
     pendingBumps.add(bump);
@@ -197,6 +215,7 @@ export function __resetCacheForTests() {
   store.clear();
   inflight.clear();
   versions.clear();
+  bumpedTo.clear();
   versionsInflight.clear();
   generations.clear();
 }
